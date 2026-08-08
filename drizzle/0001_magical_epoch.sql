@@ -1,0 +1,1 @@
+ALTER TABLE "upload_files" ADD COLUMN "drive_parent_id" text NOT NULL;
