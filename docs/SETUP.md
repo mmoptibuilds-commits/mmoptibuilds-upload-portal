@@ -1,179 +1,339 @@
-# Production setup
+# Beginner deployment guide — Vercel
 
-This portal is a small Next.js service with three server-side integrations:
+## The short answer
 
-- Supabase Postgres stores users, opaque sessions, batch metadata, file metadata, notification events, and audit events.
-- Google Drive stores the uploaded bytes in a private folder hierarchy.
-- Vercel runs the Next.js app and its server routes.
+Do **not** deploy first.
 
-The portal does **not** use Supabase Auth or Supabase Storage. Never put a database password, Google private key, or seed password in browser code or GitHub.
+You do **not** need to edit the application source code. The code is already in GitHub. First prepare Google Drive and Supabase, then add their secret values to Vercel, and only then deploy.
 
-## What is already prepared
+Your order is:
 
-The configured Supabase project is:
+1. Prepare Google Drive.
+2. Copy the Supabase database connection string.
+3. Set or reset the first admin password from your computer.
+4. Import the GitHub repository into Vercel.
+5. Add the environment variables in Vercel.
+6. Deploy and test one real upload.
 
-- Project name: `client upload portal`
-- Project ref: `ldjxwsjwtthynxzkzrdw`
-- Region: `ap-south-1`
+Never put a database password, Google private key, `AUTH_SECRET`, or reset password in GitHub.
 
-The Drive root folder is already created:
+## What you need before starting
 
-- Folder: `CLIENT UPLOADS`
-- Folder ID: `1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB`
+You need access to:
 
-The Google Cloud project shown for this deployment is `mmoptibuilds`. The service account still needs to be created or confirmed. Before production, choose one of the two supported Drive credential models below.
+- GitHub repository: `mmoptibuilds-commits/mmoptibuilds-upload-portal`
+- Google Cloud project: `mmoptibuilds` / project ID `mmoptibuilds`
+- Google Drive folder: [CLIENT UPLOADS](https://drive.google.com/drive/folders/1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB)
+- Supabase project: [client upload portal](https://supabase.com/dashboard/project/ldjxwsjwtthynxzkzrdw)
+- Vercel team: `Mmoptibuilds`
 
-## 1. Create the Google Drive credential
+The Supabase project is already provisioned. Do not create another Supabase project and do not reset this one.
 
-In [Google Cloud Console](https://console.cloud.google.com/), select project `mmoptibuilds`.
+## Step 1 — Prepare Google Drive
 
-1. Open **APIs & Services → Library** and enable **Google Drive API**.
-2. Open **IAM & Admin → Service Accounts** and create a service account, for example `upload-portal-drive`.
-3. Create a JSON key for that service account and download it once. Store it in a password manager; do not commit it.
-4. Choose exactly one production model:
+The app uploads files into this structure:
 
-   **Recommended: Google Workspace Shared Drive.** Create a Shared Drive, move or recreate `CLIENT UPLOADS` inside it, add the service account as a **Content manager**, and set `GOOGLE_DRIVE_SHARED_DRIVE_ID` to the Shared Drive ID. The root folder ID in `GOOGLE_DRIVE_ROOT_FOLDER_ID` must be the folder inside that Shared Drive. Shared Drives avoid the storage-quota problem that can affect service-account uploads in My Drive. See [Google's Shared Drive guide](https://developers.google.com/workspace/drive/api/guides/about-shareddrives) and [Shared Drive setup requirements](https://developers.google.com/workspace/drive/api/guides/enable-shareddrives).
+```text
+CLIENT UPLOADS/<username>/<batch>/<folders>/<file>
+```
 
-   **Alternative: Workspace domain-wide delegation.** If the folder must remain in a user's My Drive, configure domain-wide delegation in the Workspace Admin console for the service account's client ID with the scope `https://www.googleapis.com/auth/drive`. Set `GOOGLE_IMPERSONATE_EMAIL` to the Workspace user who owns or can edit the root folder. Leave `GOOGLE_DRIVE_SHARED_DRIVE_ID` blank. This option requires a Google Workspace administrator; consumer Gmail accounts do not support domain-wide delegation.
+### 1A. Create the Google service account
 
-5. From the JSON key, copy `project_id`, `client_email`, and `private_key` into the environment variables below. The private key remains server-only.
+1. Open [Google Cloud Console](https://console.cloud.google.com/).
+2. At the top, click the project selector.
+3. Select **Mmoptibuilds**. Confirm that the project ID is `mmoptibuilds`.
+4. In the left menu, open **APIs & Services → Library**.
+5. Search for **Google Drive API**.
+6. Open it and click **Enable**. If it says **API enabled**, continue.
+7. Open **IAM & Admin → Service Accounts**.
+8. Click **Create service account**.
+9. Use a name such as `upload-portal-drive`.
+10. Click **Create and continue**. You do not need to give it any Google Cloud project role.
+11. Click **Done**.
+12. Click the new service account.
+13. Open the **Keys** tab.
+14. Click **Add key → Create new key → JSON → Create**.
+15. A JSON file downloads. Keep it private. Do not upload it to GitHub or send it in chat.
 
-Only the root folder hierarchy needs to be accessible. The app creates:
+Open the downloaded JSON file with a text editor. You will later need these three values:
 
-`CLIENT UPLOADS/<username>/<timestamp_batch-id>/<relative folders>/<file>`
+- `project_id` — should be `mmoptibuilds`
+- `client_email` — looks like `upload-portal-drive@mmoptibuilds.iam.gserviceaccount.com`
+- `private_key` — starts with `-----BEGIN PRIVATE KEY-----`
 
-Uploaded files are not made public. The app sends `supportsAllDrives=true` on Drive operations and scopes Shared Drive searches when `GOOGLE_DRIVE_SHARED_DRIVE_ID` is set. Do not rely on a service account owning files in My Drive; Google may reject uploads when that account has no storage quota.
+### 1B. Recommended: put the folder in a Shared Drive
 
-## 2. Get the Supabase connection URI
+This is the easiest reliable production option for a service account. Google documents Shared Drive behavior [here](https://developers.google.com/workspace/drive/api/guides/about-shareddrives).
 
-In [Supabase](https://supabase.com/dashboard/project/ldjxwsjwtthynxzkzrdw/settings/database), open **Connect** and copy the **Transaction pooler** URI. It should use the pooler hostname and normally port `6543`; use the exact host and password shown by Supabase rather than guessing the region hostname.
+1. Open [Google Drive](https://drive.google.com/).
+2. In the left menu, click **Shared drives**.
+3. If you already have a Shared Drive for client uploads, open it. Otherwise click **New** and create one named `Mmoptibuilds Client Uploads`.
+4. Move the `CLIENT UPLOADS` folder into that Shared Drive, or create a new folder with that exact name.
+5. Open the Shared Drive and click its name at the top.
+6. Choose **Manage members**.
+7. Add the service account email from the JSON file.
+8. Give it the role **Content manager**.
+9. Copy the Shared Drive ID from the browser URL or the Shared Drive details.
+10. Keep the folder ID as `1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB` if that is the folder you moved. If you created a new folder, copy that new folder ID from its URL instead.
 
-The runtime uses one connection per warm serverless instance, disables prepared statements, and requires TLS. The direct `db.<ref>.supabase.co` endpoint is IPv6-only on many free projects and is not the right Vercel default.
+You will later enter:
 
-The portal tables have RLS enabled and the `anon`/`authenticated` roles have been revoked from them because this app talks to Postgres only from server routes. Keep those tables out of any future public Data API policy.
+```text
+GOOGLE_DRIVE_SHARED_DRIVE_ID = the Shared Drive ID
+GOOGLE_DRIVE_ROOT_FOLDER_ID  = the CLIENT UPLOADS folder ID
+```
 
-## 3. Configure local environment
+### 1C. Alternative: keep the folder in My Drive
 
-From the repository root:
+Use this only if you have Google Workspace administrator access. Do not use this option with a normal consumer Gmail account.
+
+1. Share the `CLIENT UPLOADS` folder with the service account email as **Editor**.
+2. In the JSON file, copy the numeric `client_id`.
+3. Open the Google Workspace Admin console.
+4. Go to **Security → Access and data control → API controls → Manage domain-wide delegation**.
+5. Click **Add new**.
+6. Paste the service account `client_id`.
+7. For OAuth scope, enter exactly:
+
+   ```text
+   https://www.googleapis.com/auth/drive
+   ```
+
+8. Save the delegation.
+9. You will later set `GOOGLE_IMPERSONATE_EMAIL` to the Workspace user's email who owns or can edit the folder.
+10. Leave `GOOGLE_DRIVE_SHARED_DRIVE_ID` blank.
+
+Do not choose both models for your first setup. Shared Drive is recommended.
+
+## Step 2 — Get the Supabase database connection string
+
+1. Open the [Supabase database settings](https://supabase.com/dashboard/project/ldjxwsjwtthynxzkzrdw/settings/database).
+2. Click **Connect** near the top of the page.
+3. Find **Transaction pooler**. It may also be labelled **Pooler** with **Transaction** mode.
+4. Copy the complete PostgreSQL connection string.
+5. Use the string exactly as Supabase gives it to you. Do not build it manually.
+
+It normally looks similar to this:
+
+```text
+postgresql://postgres.ldjxwsjwtthynxzkzrdw:YOUR_PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres?sslmode=require
+```
+
+The important parts are the pooler host and port `6543`. Do **not** use the direct `db.ldjxwsjwtthynxzkzrdw.supabase.co:5432` address. The direct address caused the original IPv6 `ENETUNREACH` error. Supabase explains its connection options [here](https://supabase.com/docs/guides/database/connecting-to-postgres).
+
+If you do not know the database password, use **Database Settings → Database password → Reset database password**, then copy a newly generated connection string from **Connect**.
+
+## Step 3 — Prepare your computer and set the admin password
+
+This step is needed because the database already contains users, and repeating the seed does not replace an existing password.
+
+### 3A. Install the tools
+
+Install:
+
+- [Node.js 20 or newer](https://nodejs.org/)
+- [Git](https://git-scm.com/downloads)
+
+### 3B. Download the project
+
+Open **PowerShell** on Windows, or Terminal on macOS/Linux, and run:
 
 ```bash
-cp .env.example .env.local
+git clone https://github.com/mmoptibuilds-commits/mmoptibuilds-upload-portal.git
+cd mmoptibuilds-upload-portal
 npm ci
 ```
 
-Edit `.env.local` and fill in every required value:
+### 3C. Create your private local environment file
 
-```dotenv
-DATABASE_URL=the exact Supabase transaction-pooler URI
-AUTH_SECRET=generate a random value of at least 32 characters
-GOOGLE_PROJECT_ID=mmoptibuilds
-GOOGLE_CLIENT_EMAIL=the service-account email
-GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-GOOGLE_DRIVE_ROOT_FOLDER_ID=1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB
+On Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env.local
+notepad .env.local
 ```
 
-Generate the auth secret with either:
+On macOS/Linux:
 
 ```bash
-openssl rand -base64 48
+cp .env.example .env.local
+nano .env.local
 ```
 
-or:
+Fill in these values in `.env.local`:
+
+```dotenv
+DATABASE_URL=paste-the-complete-Supabase-Transaction-pooler-string
+AUTH_SECRET=paste-a-random-secret-at-least-32-characters-long
+GOOGLE_PROJECT_ID=mmoptibuilds
+GOOGLE_CLIENT_EMAIL=paste-client_email-from-the-JSON-file
+GOOGLE_PRIVATE_KEY="paste-private_key-from-the-JSON-file"
+GOOGLE_DRIVE_ROOT_FOLDER_ID=1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB
+GOOGLE_DRIVE_SHARED_DRIVE_ID=paste-your-Shared-Drive-ID
+GOOGLE_IMPERSONATE_EMAIL=
+```
+
+If you selected the My Drive/domain-delegation option instead, leave `GOOGLE_DRIVE_SHARED_DRIVE_ID` blank and enter the Workspace user's email in `GOOGLE_IMPERSONATE_EMAIL`.
+
+Generate `AUTH_SECRET` by running this command and copying its output into `.env.local`:
 
 ```bash
 node -e "console.log(require('node:crypto').randomBytes(48).toString('base64'))"
 ```
 
-SMTP is optional. Leave `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM` blank if you do not want completion emails; blank optional values are accepted.
+For `GOOGLE_PRIVATE_KEY`, preserve the `\n` characters from the JSON value. Do not replace them with random spaces. Do not commit `.env.local`.
 
-## 4. Seed the first accounts
+Leave the SMTP variables blank for now. Email notifications are optional.
 
-Add strong temporary passwords to `.env.local`:
+### 3D. Reset the admin password
 
-```dotenv
-INITIAL_MMOPTIBUILDS_PASSWORD=...
-INITIAL_TWAHA_PASSWORD=...
-INITIAL_ADMIN_PASSWORD=...
-```
-
-Then run:
-
-```bash
-npm run db:seed
-npm run typecheck
-npm test
-npm run build
-```
-
-The seed is safe to repeat: existing usernames are skipped. Remove the three `INITIAL_*_PASSWORD` values from the environment after seeding and change the passwords before sharing access.
-
-If an existing account says “username or password is incorrect,” remember that repeating the seed does not replace an existing password. For a deliberate one-time reset, put the values in `.env.local`, run the command, then remove them:
+Open `.env.local` and temporarily add:
 
 ```dotenv
 RESET_USERNAME=admin
-RESET_PASSWORD=use-a-new-10-character-or-longer-password
+RESET_PASSWORD=choose-a-new-password-with-at-least-10-characters
 ```
+
+Run:
 
 ```bash
 npm run db:reset-password
 ```
 
-The command revokes that account's active sessions. Never add `RESET_PASSWORD` to Vercel.
+You should see a success message. Immediately remove `RESET_USERNAME` and `RESET_PASSWORD` from `.env.local` and save the file.
 
-The live Supabase schema has already been provisioned. Do **not** run `npm run db:migrate` against it unless you have checked the Drizzle migration state and reviewed the SQL. Future migrations must be applied to Supabase before the matching application deploy.
+The live database currently has four users, all enabled, and one enabled admin. The reset command revokes old sessions for the account.
 
-## 5. Local smoke test
+### 3E. Test locally before Vercel
+
+Run:
 
 ```bash
 npm run dev
 ```
 
-Open [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login), sign in, and check:
+Open [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login).
 
-1. `/api/health` reports `application: "ok"`, `database: "ok"`, and `driveConfiguration: "configured"`.
-2. A one-byte text file uploads successfully.
-3. A zero-byte file uploads successfully.
-4. A folder with nested files keeps its hierarchy in Drive.
-5. Pause/resume and a temporary offline event preserve the queue.
+Sign in as:
 
-## 6. Deploy to Vercel — click-by-click
+```text
+Username: admin
+Password: the-new-password-you-just-created
+```
+
+Then open [http://127.0.0.1:3000/api/health](http://127.0.0.1:3000/api/health). You want:
+
+```json
+{
+  "application": "ok",
+  "database": "ok",
+  "driveConfiguration": "configured"
+}
+```
+
+Stop the local server with `Ctrl+C` after testing.
+
+## Step 4 — Deploy to Vercel
+
+The repository's `main` branch is already ready. Vercel supports importing a Git repository and automatically deploying future merges to `main`; see [Vercel's Git deployment guide](https://vercel.com/docs/git).
 
 1. Open [Vercel New Project](https://vercel.com/new).
-2. Choose the `Mmoptibuilds` team.
-3. Import `mmoptibuilds-commits/mmoptibuilds-upload-portal` from GitHub.
-4. Keep **Framework Preset: Next.js**, **Root Directory: `.`**, and **Build Command: `npm run build`**.
-5. Add these variables for **Preview** and **Production**:
+2. Sign in with the GitHub account that can access the repository.
+3. Select the `Mmoptibuilds` team.
+4. Find `mmoptibuilds-commits/mmoptibuilds-upload-portal`.
+5. Click **Import**.
+6. On the configuration page, use:
 
-   - `DATABASE_URL`
-   - `AUTH_SECRET`
-   - `GOOGLE_PROJECT_ID`
-   - `GOOGLE_CLIENT_EMAIL`
-   - `GOOGLE_PRIVATE_KEY`
-   - `GOOGLE_DRIVE_ROOT_FOLDER_ID`
-   - `GOOGLE_DRIVE_SHARED_DRIVE_ID` for the recommended Shared Drive model, or `GOOGLE_IMPERSONATE_EMAIL` for the Workspace delegation model
-   - optional `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFICATION_EMAIL`
+   ```text
+   Project name: mmoptibuilds-upload-portal
+   Framework preset: Next.js
+   Root directory: .
+   Build command: npm run build
+   ```
 
-   Do not add the `INITIAL_*_PASSWORD` variables to Vercel unless you intentionally want seed credentials present there. Seed from a trusted local shell instead.
+   Leave the output directory automatic/default. Do not add a `netlify.toml`, Vercel serverless-function folder, or custom adapter. This is already a Next.js App Router project.
 
-6. Click **Deploy**.
-7. Open the deployment URL and check `/api/health`.
-8. Sign in and perform one small real upload. Confirm the file appears in the correct Drive folder.
+7. Expand **Environment Variables**.
+8. Add each variable below one at a time. For the real deployment, select **Production** for each variable:
 
-If Vercel shows a database connection error, replace `DATABASE_URL` with the exact Supabase **Transaction pooler** URI from Connect. Do not paste the direct IPv6 `db.*` URI.
+   ```text
+   DATABASE_URL
+   AUTH_SECRET
+   GOOGLE_PROJECT_ID
+   GOOGLE_CLIENT_EMAIL
+   GOOGLE_PRIVATE_KEY
+   GOOGLE_DRIVE_ROOT_FOLDER_ID
+   GOOGLE_DRIVE_SHARED_DRIVE_ID
+   GOOGLE_IMPERSONATE_EMAIL
+   SMTP_HOST                 optional
+   SMTP_PORT                 optional
+   SMTP_USER                 optional
+   SMTP_PASSWORD             optional
+   SMTP_FROM                 optional
+   NOTIFICATION_EMAIL        optional
+   ```
 
-## 7. Add the production domain
+   Use **either** `GOOGLE_DRIVE_SHARED_DRIVE_ID` or `GOOGLE_IMPERSONATE_EMAIL` according to the Drive model you selected. Leave the other one empty.
 
-In Vercel **Project → Settings → Domains**, add the chosen hostname, for example `upload.mmoptibuilds.com`. Vercel will show the exact DNS record for your domain. Add that record at your DNS provider, wait for verification, and leave proxying disabled until Vercel issues the certificate. Then test the custom URL in a private browser window.
+   Do **not** add `INITIAL_*_PASSWORD`, `RESET_USERNAME`, or `RESET_PASSWORD` to Vercel.
 
-## 8. Production acceptance checklist
+9. Click **Deploy**.
+10. Wait for the build to finish.
+11. Click **Visit** to open the deployed site.
 
-- `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` are green.
-- `npm audit --omit=dev --audit-level=moderate` reports zero vulnerabilities.
-- `/api/health` is green without exposing secrets.
-- The browser sees `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
-- A normal user cannot open `/admin`.
-- Disabling a user revokes active sessions.
-- There is always at least one enabled admin.
-- A batch with more than three files completes only after every declared file completes.
-- A notification attempt is recorded once per completed batch. SMTP is best-effort; the upload remains authoritative if the mail provider is unavailable.
-- Drive files remain private and the service account has access only to the root folder hierarchy.
+Vercel stores environment variables in the project settings and makes them available to the deployment; see [Vercel environment variables](https://vercel.com/docs/environment-variables).
+
+## Step 5 — Test the live Vercel site
+
+Replace `YOUR-VERCEL-DOMAIN` with the domain Vercel gives you.
+
+1. Open `https://YOUR-VERCEL-DOMAIN/api/health`.
+2. Confirm `application` is `ok`, `database` is `ok`, and `driveConfiguration` is `configured`.
+3. Open `https://YOUR-VERCEL-DOMAIN/login`.
+4. Sign in as `admin` with the password from Step 3.
+5. Upload a tiny text file.
+6. Confirm it appears inside `CLIENT UPLOADS/<username>/...` in Drive.
+7. Test a zero-byte file.
+8. Test a folder containing a file in a nested folder.
+9. Test pause and resume with a larger file.
+
+If `/api/health` says `database: "error"`, return to Vercel **Project → Settings → Environment Variables**, check `DATABASE_URL`, save it again, and redeploy. Use the exact Supabase Transaction pooler string.
+
+If it says `driveConfiguration: "missing"`, one or more Google variables are absent. If it says configured but an upload returns 403, confirm the service account is a Shared Drive **Content manager**, or confirm Workspace domain-wide delegation.
+
+## Step 6 — Add your real domain
+
+1. Open the Vercel project.
+2. Open **Settings → Domains**.
+3. Click **Add**.
+4. Enter your domain, for example `upload.mmoptibuilds.com`.
+5. Vercel shows the DNS record to create.
+6. Add that record at your domain registrar.
+7. Wait for Vercel to verify it.
+8. Test the new HTTPS URL in a private/incognito window.
+
+## What not to do
+
+- Do not deploy before adding the production environment variables.
+- Do not use the direct Supabase `db.*:5432` URL.
+- Do not paste secrets into GitHub, source files, or chat.
+- Do not put the Google JSON file in the repository.
+- Do not add reset or seed passwords to Vercel.
+- Do not create a second Supabase project.
+- Do not run `npm run db:migrate` on the live database unless a new migration has been reviewed first.
+
+## Finished checklist
+
+- [ ] Google Drive API enabled.
+- [ ] Service account created and JSON key stored privately.
+- [ ] Shared Drive selected and service account added as Content manager, or Workspace delegation configured.
+- [ ] Supabase Transaction pooler URL copied.
+- [ ] Local `.env.local` created and never committed.
+- [ ] Admin password reset and reset variables removed.
+- [ ] Local `/api/health` is healthy.
+- [ ] Vercel project imported from GitHub.
+- [ ] Production variables added to Vercel.
+- [ ] Vercel deployment succeeded.
+- [ ] Live `/api/health` is healthy.
+- [ ] Real upload tested in Drive.
+- [ ] Custom domain added, if needed.
