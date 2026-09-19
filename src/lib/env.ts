@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+const optionalString = z.preprocess((value) => value === "" ? undefined : value, z.string().optional());
+const optionalEmail = z.preprocess((value) => value === "" ? undefined : value, z.string().email().optional());
+const optionalPort = z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().positive().optional());
+
 const serverSchema = z.object({
   DATABASE_URL: z.string().url(),
   AUTH_SECRET: z.string().min(32),
@@ -7,12 +11,14 @@ const serverSchema = z.object({
   GOOGLE_CLIENT_EMAIL: z.string().email(),
   GOOGLE_PRIVATE_KEY: z.string().min(1),
   GOOGLE_DRIVE_ROOT_FOLDER_ID: z.string().min(1),
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().int().positive().optional(),
-  SMTP_USER: z.string().email().optional(),
-  SMTP_PASSWORD: z.string().optional(),
-  SMTP_FROM: z.string().email().optional(),
-  NOTIFICATION_EMAIL: z.string().email().default("mmoptibuilds@gmail.com"),
+  GOOGLE_DRIVE_SHARED_DRIVE_ID: optionalString,
+  GOOGLE_IMPERSONATE_EMAIL: optionalEmail,
+  SMTP_HOST: optionalString,
+  SMTP_PORT: optionalPort,
+  SMTP_USER: optionalEmail,
+  SMTP_PASSWORD: optionalString,
+  SMTP_FROM: optionalEmail,
+  NOTIFICATION_EMAIL: z.preprocess((value) => value === "" ? undefined : value, z.string().email().default("mmoptibuilds@gmail.com")),
 });
 
 export type ServerEnv = z.infer<typeof serverSchema>;

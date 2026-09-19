@@ -1,90 +1,179 @@
-# Upload portal setup
+# Production setup
 
-This project uses:
+This portal is a small Next.js service with three server-side integrations:
 
-- Supabase Postgres for users, sessions, batch metadata, file metadata, notifications, and audit events.
-- Google Drive for the actual uploaded bytes.
-- A Google Cloud service account for server-side Drive API access.
-- Optional SMTP for completion notifications.
+- Supabase Postgres stores users, opaque sessions, batch metadata, file metadata, notification events, and audit events.
+- Google Drive stores the uploaded bytes in a private folder hierarchy.
+- Vercel runs the Next.js app and its server routes.
 
-The project does **not** use Supabase Auth or Supabase Storage. Do not put a Google private key, database password, or `AUTH_SECRET` in browser code.
+The portal does **not** use Supabase Auth or Supabase Storage. Never put a database password, Google private key, or seed password in browser code or GitHub.
 
-## 1. Supabase
+## What is already prepared
 
-The schema has already been provisioned in the Supabase project:
+The configured Supabase project is:
 
-- Project: `client upload portal`
+- Project name: `client upload portal`
 - Project ref: `ldjxwsjwtthynxzkzrdw`
 - Region: `ap-south-1`
 
-Copy the connection string from Supabase Dashboard → Connect into `DATABASE_URL`. The database password is intentionally not stored in this repository.
+The Drive root folder is already created:
 
-The live database includes the Drizzle tables and indexes. For this initial deployment, run `npm run db:seed` after setting the three `INITIAL_*_PASSWORD` variables. Do not run `npm run db:migrate` against this already-provisioned database unless you first confirm the Drizzle migration-history table and migration state; the schema was applied through Supabase’s migration runner.
+- Folder: `CLIENT UPLOADS`
+- Folder ID: `1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB`
 
-For future schema changes, create a new versioned Drizzle migration and apply the reviewed SQL to Supabase before deploying the application.
+The Google Cloud project shown for this deployment is `mmoptibuilds`. The service account still needs to be created or confirmed. Before production, choose one of the two supported Drive credential models below.
 
-## 2. Google Drive
+## 1. Create the Google Drive credential
 
-The root folder has already been created:
+In [Google Cloud Console](https://console.cloud.google.com/), select project `mmoptibuilds`.
 
-`CLIENT UPLOADS` → `https://drive.google.com/drive/folders/1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB`
+1. Open **APIs & Services → Library** and enable **Google Drive API**.
+2. Open **IAM & Admin → Service Accounts** and create a service account, for example `upload-portal-drive`.
+3. Create a JSON key for that service account and download it once. Store it in a password manager; do not commit it.
+4. Choose exactly one production model:
 
-Create or reuse a Google Cloud project, then:
+   **Recommended: Google Workspace Shared Drive.** Create a Shared Drive, move or recreate `CLIENT UPLOADS` inside it, add the service account as a **Content manager**, and set `GOOGLE_DRIVE_SHARED_DRIVE_ID` to the Shared Drive ID. The root folder ID in `GOOGLE_DRIVE_ROOT_FOLDER_ID` must be the folder inside that Shared Drive. Shared Drives avoid the storage-quota problem that can affect service-account uploads in My Drive. See [Google's Shared Drive guide](https://developers.google.com/workspace/drive/api/guides/about-shareddrives) and [Shared Drive setup requirements](https://developers.google.com/workspace/drive/api/guides/enable-shareddrives).
 
-1. Enable the **Google Drive API**.
-2. Create a service account.
-3. Create a JSON key for it and keep that key private.
-4. Put its `project_id`, `client_email`, and `private_key` into the server environment variables.
-5. Share the `CLIENT UPLOADS` folder with the service account’s `client_email` as **Editor**.
-6. Set `GOOGLE_DRIVE_ROOT_FOLDER_ID` to `1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB`.
+   **Alternative: Workspace domain-wide delegation.** If the folder must remain in a user's My Drive, configure domain-wide delegation in the Workspace Admin console for the service account's client ID with the scope `https://www.googleapis.com/auth/drive`. Set `GOOGLE_IMPERSONATE_EMAIL` to the Workspace user who owns or can edit the root folder. Leave `GOOGLE_DRIVE_SHARED_DRIVE_ID` blank. This option requires a Google Workspace administrator; consumer Gmail accounts do not support domain-wide delegation.
 
-The service account needs access to the folder, not just the human Google account that created it. The app will create this structure automatically:
+5. From the JSON key, copy `project_id`, `client_email`, and `private_key` into the environment variables below. The private key remains server-only.
 
-`CLIENT UPLOADS/<username>/<timestamp_batch-id>/...`
+Only the root folder hierarchy needs to be accessible. The app creates:
 
-Uploaded files are not made public by the app.
+`CLIENT UPLOADS/<username>/<timestamp_batch-id>/<relative folders>/<file>`
 
-## 3. Local configuration and seed
+Uploaded files are not made public. The app sends `supportsAllDrives=true` on Drive operations and scopes Shared Drive searches when `GOOGLE_DRIVE_SHARED_DRIVE_ID` is set. Do not rely on a service account owning files in My Drive; Google may reject uploads when that account has no storage quota.
+
+## 2. Get the Supabase connection URI
+
+In [Supabase](https://supabase.com/dashboard/project/ldjxwsjwtthynxzkzrdw/settings/database), open **Connect** and copy the **Transaction pooler** URI. It should use the pooler hostname and normally port `6543`; use the exact host and password shown by Supabase rather than guessing the region hostname.
+
+The runtime uses one connection per warm serverless instance, disables prepared statements, and requires TLS. The direct `db.<ref>.supabase.co` endpoint is IPv6-only on many free projects and is not the right Vercel default.
+
+The portal tables have RLS enabled and the `anon`/`authenticated` roles have been revoked from them because this app talks to Postgres only from server routes. Keep those tables out of any future public Data API policy.
+
+## 3. Configure local environment
+
+From the repository root:
 
 ```bash
 cp .env.example .env.local
-openssl rand -base64 48
 npm ci
+```
+
+Edit `.env.local` and fill in every required value:
+
+```dotenv
+DATABASE_URL=the exact Supabase transaction-pooler URI
+AUTH_SECRET=generate a random value of at least 32 characters
+GOOGLE_PROJECT_ID=mmoptibuilds
+GOOGLE_CLIENT_EMAIL=the service-account email
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_DRIVE_ROOT_FOLDER_ID=1Ok4FuEf1cfwkt-hkibgadWUeD-0YSXgB
+```
+
+Generate the auth secret with either:
+
+```bash
+openssl rand -base64 48
+```
+
+or:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(48).toString('base64'))"
+```
+
+SMTP is optional. Leave `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM` blank if you do not want completion emails; blank optional values are accepted.
+
+## 4. Seed the first accounts
+
+Add strong temporary passwords to `.env.local`:
+
+```dotenv
+INITIAL_MMOPTIBUILDS_PASSWORD=...
+INITIAL_TWAHA_PASSWORD=...
+INITIAL_ADMIN_PASSWORD=...
+```
+
+Then run:
+
+```bash
 npm run db:seed
 npm run typecheck
 npm test
+npm run build
 ```
 
-Fill in the environment values before running the commands. The seed creates:
+The seed is safe to repeat: existing usernames are skipped. Remove the three `INITIAL_*_PASSWORD` values from the environment after seeding and change the passwords before sharing access.
 
-- `mmoptibuilds` user
-- `twaha` user
-- `admin` administrator
+If an existing account says “username or password is incorrect,” remember that repeating the seed does not replace an existing password. For a deliberate one-time reset, put the values in `.env.local`, run the command, then remove them:
 
-Change those passwords before sharing the portal.
+```dotenv
+RESET_USERNAME=admin
+RESET_PASSWORD=use-a-new-10-character-or-longer-password
+```
 
-## 4. Verify the integrations
+```bash
+npm run db:reset-password
+```
 
-Start the app:
+The command revokes that account's active sessions. Never add `RESET_PASSWORD` to Vercel.
+
+The live Supabase schema has already been provisioned. Do **not** run `npm run db:migrate` against it unless you have checked the Drizzle migration state and reviewed the SQL. Future migrations must be applied to Supabase before the matching application deploy.
+
+## 5. Local smoke test
 
 ```bash
 npm run dev
 ```
 
-Open `/api/health`. A correctly configured deployment should report:
+Open [http://127.0.0.1:3000/login](http://127.0.0.1:3000/login), sign in, and check:
 
-- `application: "ok"`
-- `database: "ok"`
-- `driveConfiguration: "configured"`
+1. `/api/health` reports `application: "ok"`, `database: "ok"`, and `driveConfiguration: "configured"`.
+2. A one-byte text file uploads successfully.
+3. A zero-byte file uploads successfully.
+4. A folder with nested files keeps its hierarchy in Drive.
+5. Pause/resume and a temporary offline event preserve the queue.
 
-Then sign in as a seeded user, create a small test batch, and upload one small file. Confirm that the file appears under `CLIENT UPLOADS/<username>/...` in Drive.
+## 6. Deploy to Vercel — click-by-click
 
-## 5. Vercel deployment
+1. Open [Vercel New Project](https://vercel.com/new).
+2. Choose the `Mmoptibuilds` team.
+3. Import `mmoptibuilds-commits/mmoptibuilds-upload-portal` from GitHub.
+4. Keep **Framework Preset: Next.js**, **Root Directory: `.`**, and **Build Command: `npm run build`**.
+5. Add these variables for **Preview** and **Production**:
 
-Add the same server-only variables in Vercel Project Settings → Environment Variables for Preview and Production. Required variables are:
+   - `DATABASE_URL`
+   - `AUTH_SECRET`
+   - `GOOGLE_PROJECT_ID`
+   - `GOOGLE_CLIENT_EMAIL`
+   - `GOOGLE_PRIVATE_KEY`
+   - `GOOGLE_DRIVE_ROOT_FOLDER_ID`
+   - `GOOGLE_DRIVE_SHARED_DRIVE_ID` for the recommended Shared Drive model, or `GOOGLE_IMPERSONATE_EMAIL` for the Workspace delegation model
+   - optional `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFICATION_EMAIL`
 
-`DATABASE_URL`, `AUTH_SECRET`, `GOOGLE_PROJECT_ID`, `GOOGLE_CLIENT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, `INITIAL_MMOPTIBUILDS_PASSWORD`, `INITIAL_TWAHA_PASSWORD`, and `INITIAL_ADMIN_PASSWORD`.
+   Do not add the `INITIAL_*_PASSWORD` variables to Vercel unless you intentionally want seed credentials present there. Seed from a trusted local shell instead.
 
-The SMTP variables are optional. If they are absent, uploads still work and completion notification status is `not_configured`.
+6. Click **Deploy**.
+7. Open the deployment URL and check `/api/health`.
+8. Sign in and perform one small real upload. Confirm the file appears in the correct Drive folder.
 
-After deployment, check `/api/health` and perform one small real upload. Do not expose the `.env.local` file or service-account JSON key in GitHub.
+If Vercel shows a database connection error, replace `DATABASE_URL` with the exact Supabase **Transaction pooler** URI from Connect. Do not paste the direct IPv6 `db.*` URI.
+
+## 7. Add the production domain
+
+In Vercel **Project → Settings → Domains**, add the chosen hostname, for example `upload.mmoptibuilds.com`. Vercel will show the exact DNS record for your domain. Add that record at your DNS provider, wait for verification, and leave proxying disabled until Vercel issues the certificate. Then test the custom URL in a private browser window.
+
+## 8. Production acceptance checklist
+
+- `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` are green.
+- `npm audit --omit=dev --audit-level=moderate` reports zero vulnerabilities.
+- `/api/health` is green without exposing secrets.
+- The browser sees `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
+- A normal user cannot open `/admin`.
+- Disabling a user revokes active sessions.
+- There is always at least one enabled admin.
+- A batch with more than three files completes only after every declared file completes.
+- A notification attempt is recorded once per completed batch. SMTP is best-effort; the upload remains authoritative if the mail provider is unavailable.
+- Drive files remain private and the service account has access only to the root folder hierarchy.
