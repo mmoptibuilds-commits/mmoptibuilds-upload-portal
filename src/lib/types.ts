@@ -13,4 +13,5 @@ export type UploadItem = {
   sessionUrl?: string;
   dbFileId?: string;
   remoteFileId?: string;
+  resetSession?: boolean;
 };

@@ -8,5 +8,5 @@ Run `npm run lint`, `npm run typecheck`, `npm run test`, and `npm run build` bef
 4. Pause during a large upload, resume, disconnect the network, reconnect, then retry.
 5. Disable a user and verify their existing session can no longer access protected routes.
 6. Change a password and verify the old session is revoked.
-7. Confirm a completed upload sends exactly one notification, and temporarily bad SMTP does not mark the batch as failed.
+7. Confirm a completed upload records one notification attempt, and temporarily bad SMTP does not mark the batch as failed. Treat SMTP delivery as best-effort rather than exactly-once: a provider or process crash can require an operational retry.
 8. Check keyboard-only login, visible focus, 320px layout, Android Chrome file picker, and reduced-motion mode.
