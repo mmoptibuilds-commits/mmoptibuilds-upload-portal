@@ -131,7 +131,7 @@ This step is needed because the database already contains users, and repeating t
 
 Install:
 
-- [Node.js 20 or newer](https://nodejs.org/)
+- [Node.js 22 or newer](https://nodejs.org/)
 - [Git](https://git-scm.com/downloads)
 
 ### 3B. Download the project

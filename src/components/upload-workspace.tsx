@@ -5,7 +5,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { CHUNK_SIZE, MAX_CONCURRENCY } from "@/lib/constants";
 import { nextOffset, retryDelay } from "@/lib/upload-protocol";
 import type { UploadItem, UploadStatus } from "@/lib/types";
-import { EmptyState, formatBytes, formatDuration, RippleButton, Status } from "@/components/ui";
+import { EmptyState, formatBytes, formatDuration, Icon, RippleButton, Status } from "@/components/ui";
 
 const run = new Set<string>();
 const fileId = () => crypto.randomUUID();
@@ -136,6 +136,7 @@ export function UploadWorkspace({ username }: { username: string }) {
   const [startingState, setStartingState] = useState(false);
 
   useEffect(() => {
+    setOnline(navigator.onLine);
     const off = () => {
       setOnline(false);
       setMessage("Connection lost. Uploads are paused safely.");
@@ -267,6 +268,14 @@ export function UploadWorkspace({ username }: { username: string }) {
     setItems((current) => current.filter((item) => item.id !== id));
   }
 
+  function resetQueue() {
+    if (active) return;
+    setItems([]);
+    setBatchId(null);
+    setComplete(false);
+    setMessage("");
+  }
+
   return <div className="workspace">
     <header className="page-header">
       <div><span className="eyebrow">CLIENT TRANSFER / {username.toUpperCase()}</span><h1>Secure asset upload</h1><p>Files go directly to mmoptibuilds storage. Folder structure stays intact.</p></div>
@@ -274,8 +283,8 @@ export function UploadWorkspace({ username }: { username: string }) {
     </header>
     {complete ? <Completion total={total} count={items.length} onReset={() => { setItems([]); setBatchId(null); setComplete(false); setMessage(""); }} /> : <>
       <section className="upload-grid" aria-labelledby="drop-title">
-        <div className={`drop-zone ${dragging ? "dragging" : ""}`} role="region" aria-describedby="drop-description" onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={async (event: DragEvent) => { event.preventDefault(); setDragging(false); add(await droppedFiles(event.dataTransfer)); }}>
-          <div className="drop-visual" aria-hidden="true"><span className="orbit orbit-one" /><span className="orbit orbit-two" /><b>↥</b></div>
+        <div className={`drop-zone ${dragging ? "dragging" : ""}`} role="region" tabIndex={0} aria-label="Drop files here, or press Enter to choose files" aria-describedby="drop-description" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInput.current?.click(); } }} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={async (event: DragEvent) => { event.preventDefault(); setDragging(false); add(await droppedFiles(event.dataTransfer)); }}>
+          <div className="drop-visual" aria-hidden="true"><span className="orbit orbit-one" /><span className="orbit orbit-two" /><b><Icon name="upload" size={30} /></b></div>
           <span className="eyebrow">ASSET INTAKE</span><h2 id="drop-title">Drop files or a complete folder.</h2><p id="drop-description">Photos, video, source files, archives, executables, and unknown formats are accepted as untrusted data.</p>
           <div className="drop-actions"><RippleButton className="button-primary" type="button" onClick={() => fileInput.current?.click()}>Select files</RippleButton><RippleButton className="button-secondary" type="button" onClick={() => folderInput.current?.click()}>Select folder</RippleButton></div>
           <input ref={fileInput} className="sr-only" aria-label="Choose files to upload" type="file" multiple onChange={choose} /><input ref={folderInput} className="sr-only" aria-label="Choose a folder to upload" type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} onChange={choose} />
@@ -286,7 +295,7 @@ export function UploadWorkspace({ username }: { username: string }) {
       {items.length ? <section className="queue-panel material-surface" aria-labelledby="queue-title">
         <div className="queue-head"><div><span className="eyebrow">UPLOAD QUEUE</span><h2 id="queue-title">{items.length} {items.length === 1 ? "file" : "files"} · {formatBytes(total)}</h2></div><div className="queue-progress"><b>{percentage}%</b><span>{formatBytes(uploaded)} / {formatBytes(total)}</span></div></div>
         <div className="progress-track" role="progressbar" aria-label="Overall upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={`${percentage}% uploaded`}><span style={{ width: `${percentage}%` }} /></div>
-        <div className="queue-controls"><p>{active ? `${formatBytes(speed)}/s · ${formatDuration((total - uploaded) / Math.max(speed, 1))} remaining` : "Review your queue, then start the secure transfer."}</p><div>{active && canPause && <RippleButton className="button-secondary" type="button" onClick={pauseAll}>Pause all</RippleButton>}<RippleButton className="button-primary" type="button" onClick={start} disabled={active || startingState || !online}>{active || startingState ? "Transferring…" : "Start transfer"}</RippleButton></div></div>
+        <div className="queue-controls"><p>{active ? `${formatBytes(speed)}/s · ${formatDuration((total - uploaded) / Math.max(speed, 1))} remaining` : "Review your queue, then start the secure transfer."}</p><div>{active && canPause && <RippleButton className="button-secondary" type="button" onClick={pauseAll}><Icon name="pause" size={15} />Pause all</RippleButton>}{batchId && !active && <RippleButton className="button-secondary" type="button" onClick={resetQueue}>Start over</RippleButton>}<RippleButton className="button-primary" type="button" onClick={start} disabled={active || startingState || !online}>{active || startingState ? "Transferring…" : "Start transfer"}<Icon name="arrow-right" size={16} /></RippleButton></div></div>
         {message && <p className="queue-message" role="status" aria-live="polite">{message}</p>}
         <div className="upload-list">{items.map((item) => <UploadRow key={item.id} item={item} onPause={() => pause(item.id)} onRetry={() => retry(item.id)} onRemove={() => remove(item.id)} canRemove={!batchId} />)}</div>
       </section> : <EmptyState title="Your queue is clear." detail="Choose individual files, a folder, or drag them into the transfer area." />}
@@ -299,14 +308,14 @@ function UploadRow({ item, onPause, onRetry, onRemove, canRemove }: { item: Uplo
   const percent = item.file.size ? Math.min(100, item.uploadedBytes / item.file.size * 100) : item.remoteFileId ? 100 : 0;
   const tone = item.status === "completed" ? "green" : item.status === "failed" ? "red" : item.status === "paused" ? "orange" : "blue";
   return <motion.article className="upload-row" aria-label={`Upload ${item.relativePath}`} layout={!reduce} initial={reduce ? false : { opacity: 0, y: 8 }} animate={reduce ? undefined : { opacity: 1, y: 0 }} exit={reduce ? undefined : { opacity: 0, x: 20 }}>
-    <div className="file-icon" aria-hidden="true">{item.relativePath.includes("/") ? "⌘" : "·"}</div>
+    <div className="file-icon" aria-hidden="true"><Icon name={item.relativePath.includes("/") ? "folder" : "file"} size={16} /></div>
     <div className="file-info"><b title={item.relativePath}>{item.file.name}</b><span>{item.relativePath.replace(`/${item.file.name}`, "") || "Root"} · {formatBytes(item.file.size)}</span><div className="row-progress" role="progressbar" aria-label={`${item.file.name} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%` }} /></div>{item.error && <span className="row-error" role="alert">{item.error}</span>}</div>
     <div className="file-stats"><Status tone={tone}>{item.status.replace("_", " ")}</Status><span>{Math.round(percent)}% · {item.speed ? `${formatBytes(item.speed)}/s` : formatBytes(item.uploadedBytes)}</span></div>
-    <div className="row-actions">{item.status === "uploading" && <button type="button" onClick={onPause}>Pause</button>}{["failed", "paused"].includes(item.status) && <button type="button" onClick={onRetry}>Retry</button>}{canRemove && ["queued", "failed", "paused"].includes(item.status) && <button type="button" aria-label={`Remove ${item.file.name}`} onClick={onRemove}>×</button>}</div>
+    <div className="row-actions">{item.status === "uploading" && <button type="button" onClick={onPause}><Icon name="pause" size={14} /><span>Pause</span></button>}{["failed", "paused"].includes(item.status) && <button type="button" onClick={onRetry}><Icon name="play" size={14} /><span>Retry</span></button>}{canRemove && ["queued", "failed", "paused"].includes(item.status) && <button type="button" aria-label={`Remove ${item.file.name}`} title={`Remove ${item.file.name}`} onClick={onRemove}><Icon name="x" size={15} /><span className="sr-only">Remove</span></button>}</div>
   </motion.article>;
 }
 
 function Completion({ total, count, onReset }: { total: number; count: number; onReset: () => void }) {
   const reduce = useReducedMotion();
-  return <motion.section className="completion material-glass" aria-labelledby="completion-title" initial={reduce ? false : { opacity: 0, scale: 0.96 }} animate={reduce ? undefined : { opacity: 1, scale: 1 }}><div className="complete-mark" aria-hidden="true">✓</div><span className="eyebrow">TRANSFER COMPLETE</span><h2 id="completion-title">Files sent securely.</h2><p>mmoptibuilds has received your upload. You may close this page.</p><div className="complete-stats"><span><b>{count}</b>files</span><span><b>{formatBytes(total)}</b>delivered</span><span><b>{new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date())}</b>completed</span></div><RippleButton className="button-primary" type="button" onClick={onReset}>Upload more files</RippleButton></motion.section>;
+  return <motion.section className="completion material-glass" aria-labelledby="completion-title" initial={reduce ? false : { opacity: 0, scale: 0.96 }} animate={reduce ? undefined : { opacity: 1, scale: 1 }}><div className="complete-mark" aria-hidden="true"><Icon name="check" size={30} /></div><span className="eyebrow">TRANSFER COMPLETE</span><h2 id="completion-title">Files sent securely.</h2><p>mmoptibuilds has received your upload. You may close this page.</p><div className="complete-stats"><span><b>{count}</b>files</span><span><b>{formatBytes(total)}</b>delivered</span><span><b>{new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date())}</b>completed</span></div><RippleButton className="button-primary" type="button" onClick={onReset}>Upload more files<Icon name="arrow-right" size={16} /></RippleButton></motion.section>;
 }
