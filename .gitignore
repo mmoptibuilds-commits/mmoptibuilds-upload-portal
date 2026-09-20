@@ -2,6 +2,11 @@ node_modules
 .next
 .env
 .env.local
+.env.*
+!.env.example
+.vercel
+.foreman/
+*.tsbuildinfo
 coverage
 playwright-report
 test-results
