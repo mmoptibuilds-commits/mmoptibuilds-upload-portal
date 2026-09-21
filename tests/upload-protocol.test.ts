@@ -13,7 +13,7 @@ describe("signed Supabase resumable upload protocol", () => {
     assert.equal(typeof protocol.buildStorageTusEndpoint, "function");
     assert.equal(
       protocol.buildStorageTusEndpoint("https://project-ref.supabase.co"),
-      "https://project-ref.storage.supabase.co/storage/v1/upload/resumable",
+      "https://project-ref.storage.supabase.co/storage/v1/upload/resumable/sign",
     );
   });
 

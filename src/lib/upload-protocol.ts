@@ -43,19 +43,27 @@ export type TusUploadFactory = (file: File | Blob, options: TusUploadOptions) =>
 
 export function buildStorageTusEndpoint(storageUrl: string) {
   let url: URL;
+
   try {
     url = new URL(storageUrl);
   } catch {
     throw new Error("Storage configuration is invalid.");
   }
+
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error("Storage configuration is invalid.");
   }
 
-  const hostname = url.hostname.endsWith(".supabase.co") && !url.hostname.endsWith(".storage.supabase.co")
-    ? url.hostname.replace(/\.supabase\.co$/, ".storage.supabase.co")
-    : url.hostname;
-  return `${url.protocol}//${hostname}${url.port ? `:${url.port}` : ""}/storage/v1/upload/resumable`;
+  const hostname =
+    url.hostname.endsWith(".supabase.co") &&
+    !url.hostname.endsWith(".storage.supabase.co")
+      ? url.hostname.replace(
+          /\.supabase\.co$/,
+          ".storage.supabase.co",
+        )
+      : url.hostname;
+
+  return `${url.protocol}//${hostname}${url.port ? `:${url.port}` : ""}/storage/v1/upload/resumable/sign`;
 }
 
 export function buildSignedTusOptions(input: SignedTusConfiguration) {
