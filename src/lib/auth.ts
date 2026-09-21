@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { hash, verify } from "@node-rs/argon2";
+import { promiseWithTimeout } from "@/lib/async-timeouts";
 import { db } from "@/lib/db";
 import { sessions, users } from "@/lib/db/schema";
 import { opaqueId } from "@/lib/security";
@@ -28,8 +29,14 @@ export async function createSession(user: SessionUser, remember: boolean) {
 export async function deleteSession() {
   const jar = await cookies();
   const id = jar.get(SESSION_COOKIE)?.value;
-  if (id) await db().update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, id));
   jar.set(SESSION_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 0 });
+  if (!id) return;
+  try {
+    await promiseWithTimeout(db().update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, id)), 3_000, "Session revocation");
+  } catch {
+    // The browser cookie is already cleared; do not strand the user on logout
+    // when the database is unavailable or a request is aborted.
+  }
 }
 
 export async function currentUser(): Promise<SessionUser | null> {

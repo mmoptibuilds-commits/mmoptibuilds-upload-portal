@@ -5,6 +5,7 @@ import { users } from "@/lib/db/schema";
 import { createSession, passwordVerify } from "@/lib/auth";
 import { log } from "@/lib/log";
 import { checkLoginRateLimit, clearLoginAccount, recordLoginFailure } from "@/lib/rate-limit";
+import { isSameOriginRequest } from "@/lib/security";
 import { z } from "zod";
 
 const inputSchema = z.object({ username: z.string().trim().min(2).max(64), password: z.string().min(1).max(256), remember: z.boolean().optional().default(false) });
@@ -12,6 +13,7 @@ const DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$1nzScQ7cIP7l1iBXPzTv
 
 export async function POST(request: Request) {
   try {
+    if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
     const parsed = inputSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return NextResponse.json({ error: "Enter your username and password." }, { status: 400 });
     const username = parsed.data.username.toLowerCase();

@@ -3,61 +3,102 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { uploadBatches, uploadFiles } from "@/lib/db/schema";
 import { requireUser, AuthError } from "@/lib/auth";
-import { initResumableUpload } from "@/lib/drive";
-import { safeRelativePath } from "@/lib/security";
-import { MAX_BATCH_BYTES } from "@/lib/constants";
-import { z } from "zod";
+import { isSameOriginRequest, safeRelativePath } from "@/lib/security";
+import { createSignedUploadAuthorization } from "@/lib/storage";
+import { deriveStorageObjectPath } from "@/lib/storage-path";
+import {
+  buildAuthorizedUploadUpdate,
+  buildUploadReservationValues,
+  classifyUploadReservation,
+  createUploadInitializationOrchestrator,
+  isUploadBatchActiveStatus,
+  mapUploadInitializationResult,
+  parseUploadInitializationRequest,
+  UploadInitializationError,
+  type UploadInitializationInput,
+} from "@/lib/upload-initialization";
 
-const cache = new Map<string, Map<string, string>>();
-const schema = z.object({ batchId: z.string().uuid(), relativePath: z.string().min(1).max(2048), size: z.number().int().nonnegative().max(MAX_BATCH_BYTES), mimeType: z.string().max(255).optional().default("application/octet-stream"), resetSession: z.boolean().optional().default(false) });
+type InitInput = UploadInitializationInput;
 
-function folderCache(batchId: string) {
-  const existing = cache.get(batchId);
-  if (existing) return existing;
-  if (cache.size >= 256) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
-  const created = new Map<string, string>();
-  cache.set(batchId, created);
-  return created;
+async function reserveUpload(input: InitInput) {
+  return db().transaction(async (tx) => {
+    // Serialize ownership, manifest accounting, and idempotent path reservation,
+    // then release the database connection before requesting storage authorization.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`batch:${input.batchId}`}))`);
+    const batch = (await tx.select().from(uploadBatches).where(and(eq(uploadBatches.id, input.batchId), eq(uploadBatches.userId, input.userId))).limit(1))[0];
+    if (!batch || batch.status === "cancelled" || batch.status === "completed" || batch.status === "failed") return { kind: "unavailable" as const };
+
+    const existing = (await tx.select().from(uploadFiles).where(and(eq(uploadFiles.batchId, batch.id), eq(uploadFiles.relativePath, input.relativePath))).limit(1))[0];
+    if (existing) {
+      const decision = classifyUploadReservation(existing, input, input.storagePath);
+      if (decision === "conflict") return { kind: "conflict" as const };
+      if (decision === "completed") return { kind: "completed" as const };
+      if (existing.storagePath === input.storagePath) return { kind: "reserved" as const, fileId: existing.id, isNew: false };
+      const row = (await tx.update(uploadFiles).set({ storagePath: input.storagePath }).where(eq(uploadFiles.id, existing.id)).returning())[0];
+      return row ? { kind: "reserved" as const, fileId: row.id, isNew: false } : { kind: "unavailable" as const };
+    }
+
+    const manifest = (await tx.select({ count: sql<number>`count(*)::int`, bytes: sql<number>`coalesce(sum(${uploadFiles.size}), 0)::bigint` }).from(uploadFiles).where(eq(uploadFiles.batchId, batch.id)))[0];
+    if ((manifest?.count ?? 0) >= batch.fileCount || Number(manifest?.bytes ?? 0) + input.size > batch.totalBytes) return { kind: "limit" as const };
+    const row = (await tx.insert(uploadFiles).values(buildUploadReservationValues(input, input.storagePath)).returning())[0];
+    return row ? { kind: "reserved" as const, fileId: row.id, isNew: true } : { kind: "unavailable" as const };
+  });
 }
+
+async function finalizeReservedUpload(
+  input: InitInput,
+  fileId: string,
+  authorization: Awaited<ReturnType<typeof createSignedUploadAuthorization>>,
+) {
+  return db().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`batch:${input.batchId}`}))`);
+    const batch = (await tx.select({ id: uploadBatches.id, status: uploadBatches.status }).from(uploadBatches).where(and(
+      eq(uploadBatches.id, input.batchId),
+      eq(uploadBatches.userId, input.userId),
+    )).limit(1))[0];
+    if (!batch || !isUploadBatchActiveStatus(batch.status)) return { kind: "unavailable" as const };
+    const current = (await tx.select().from(uploadFiles).where(and(eq(uploadFiles.id, fileId), eq(uploadFiles.batchId, input.batchId), eq(uploadFiles.relativePath, input.relativePath))).limit(1))[0];
+    if (!current) return { kind: "unavailable" as const };
+    const decision = classifyUploadReservation(current, input, input.storagePath);
+    if (decision === "conflict") return { kind: "conflict" as const };
+    if (decision === "completed") return { kind: "completed" as const };
+    if (authorization.path !== input.storagePath) return { kind: "unavailable" as const };
+    const row = (await tx.update(uploadFiles).set(buildAuthorizedUploadUpdate(input.storagePath)).where(eq(uploadFiles.id, current.id)).returning())[0];
+    return row ? { kind: "authorized" as const, fileId: row.id, authorization } : { kind: "unavailable" as const };
+  });
+}
+
+async function markReservedUploadFailed(fileId: string) {
+  await db().update(uploadFiles).set({ status: "failed", errorCategory: "storage_authorization" }).where(and(eq(uploadFiles.id, fileId), eq(uploadFiles.status, "preparing")));
+}
+
+const initializeUpload = createUploadInitializationOrchestrator({
+  reserve: reserveUpload,
+  authorize: ({ userId, batchId, relativePath }) => createSignedUploadAuthorization({ userId, batchId, relativePath }),
+  finalize: (input, reservation, authorization) => finalizeReservedUpload(input, reservation.fileId, authorization),
+  markAuthorizationFailed: markReservedUploadFailed,
+});
 
 export async function POST(request: Request) {
   try {
-    const user = await requireUser(); const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "This file metadata is invalid." }, { status: 400 });
-    const batch = (await db().select().from(uploadBatches).where(and(eq(uploadBatches.id, parsed.data.batchId), eq(uploadBatches.userId, user.id))).limit(1))[0];
-    if (!batch || batch.status === "cancelled" || batch.status === "completed" || batch.status === "failed") return NextResponse.json({ error: "This upload batch is unavailable." }, { status: 404 });
+    if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+    const user = await requireUser();
+    const parsed = await parseUploadInitializationRequest(request);
+    if (parsed.kind === "invalid") return NextResponse.json({ error: "This file metadata is invalid." }, { status: 400 });
     let relativePath: string;
     try { relativePath = safeRelativePath(parsed.data.relativePath); } catch { return NextResponse.json({ error: "This file path is invalid." }, { status: 400 }); }
     const fileName = relativePath.split("/").at(-1)!;
-    const result = await db().transaction(async (tx) => {
-      // Keep the declared manifest and folder creation consistent across Vercel instances.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`batch:${batch.id}`}))`);
-      const folderParts = relativePath.split("/").slice(0, -1);
-      for (let index = 0; index < folderParts.length; index += 1) await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`folder:${batch.driveFolderId}:${folderParts.slice(0, index + 1).join("/")}`}))`);
-      const existing = (await tx.select().from(uploadFiles).where(and(eq(uploadFiles.batchId, batch.id), eq(uploadFiles.relativePath, relativePath))).limit(1))[0];
-      if (existing && (existing.fileName !== fileName || existing.size !== parsed.data.size || existing.mimeType !== parsed.data.mimeType)) return { kind: "conflict" as const };
-      if (existing?.status === "completed") return { kind: "completed" as const };
-      if (existing?.driveFileId && existing.size === 0 && !parsed.data.resetSession) return { kind: "existing" as const, row: existing };
-      if (existing?.resumableSessionUrl && !parsed.data.resetSession) return { kind: "existing" as const, row: existing };
-      const manifest = (await tx.select({ count: sql<number>`count(*)::int`, bytes: sql<number>`coalesce(sum(${uploadFiles.size}), 0)::bigint` }).from(uploadFiles).where(eq(uploadFiles.batchId, batch.id)))[0];
-      // A reset replaces the existing manifest row; do not reject it merely
-      // because the batch is already at its declared file/byte limit.
-      const replacedCount = existing ? 1 : 0;
-      const replacedBytes = existing?.size ?? 0;
-      if ((manifest?.count ?? 0) - replacedCount >= batch.fileCount || Number(manifest?.bytes ?? 0) - replacedBytes + parsed.data.size > batch.totalBytes) return { kind: "limit" as const };
-      const initialized = await initResumableUpload({ name: fileName, relativePath, size: parsed.data.size, mimeType: parsed.data.mimeType, batchFolderId: batch.driveFolderId, folderCache: folderCache(batch.id) });
-      const row = (await tx.insert(uploadFiles).values({ batchId: batch.id, relativePath, fileName, size: parsed.data.size, mimeType: parsed.data.mimeType, status: "uploading", driveParentId: initialized.parent, driveFileId: initialized.driveFileId, resumableSessionUrl: initialized.sessionUrl }).onConflictDoUpdate({ target: [uploadFiles.batchId, uploadFiles.relativePath], set: { status: "uploading", driveParentId: initialized.parent, driveFileId: initialized.driveFileId, resumableSessionUrl: initialized.sessionUrl, errorCategory: null } }).returning())[0];
-      return { kind: "new" as const, row };
-    });
-    if (result.kind === "conflict") return NextResponse.json({ error: "A different file is already queued at this path." }, { status: 409 });
-    if (result.kind === "completed") return NextResponse.json({ error: "This file is already finalized." }, { status: 409 });
-    if (result.kind === "limit") return NextResponse.json({ error: "This file would exceed the batch manifest limit." }, { status: 409 });
-    return NextResponse.json({ fileId: result.row.id, sessionUrl: result.row.resumableSessionUrl, driveFileId: result.row.driveFileId });
+    let storagePath: string;
+    try { storagePath = deriveStorageObjectPath(user.id, parsed.data.batchId, relativePath); } catch { return NextResponse.json({ error: "This file path is invalid." }, { status: 400 }); }
+    const input = { ...parsed.data, relativePath, fileName, userId: user.id, storagePath };
+    const result = await initializeUpload(input);
+    const response = mapUploadInitializationResult(result);
+    return NextResponse.json(response.body, { status: response.status });
   } catch (error) {
     if (error instanceof AuthError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "Unable to create the upload session. Check the connection and retry." }, { status: 502 });
+    if (error instanceof UploadInitializationError) {
+      return NextResponse.json({ error: error.code === "authorization_failed" ? "Unable to authorize this upload. Check the connection and retry." : "Unable to finalize this upload authorization. Check the connection and retry." }, { status: 502 });
+    }
+    return NextResponse.json({ error: "Unable to initialize this upload. Check the connection and retry." }, { status: 502 });
   }
 }

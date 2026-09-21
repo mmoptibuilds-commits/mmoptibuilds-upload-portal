@@ -3,10 +3,12 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { sessions, users } from "@/lib/db/schema";
 import { AuthError, passwordHash, requireAdmin } from "@/lib/auth";
+import { isSameOriginRequest } from "@/lib/security";
 import { z } from "zod";
 const schema = z.object({ enabled: z.boolean().optional(), password: z.string().min(10).max(256).optional(), role: z.enum(["admin", "user"]).optional() }).refine((value) => value.enabled !== undefined || value.password || value.role, "No changes supplied");
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
+    if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
     const actor = await requireAdmin(); const { id } = await context.params; const parsed = schema.safeParse(await request.json());
     if (!parsed.success) return NextResponse.json({ error: "Provide a valid user update." }, { status: 400 });
     if (id === actor.id && (parsed.data.enabled === false || parsed.data.role === "user")) return NextResponse.json({ error: "You cannot remove administrator access from your own active account." }, { status: 400 });
