@@ -41,7 +41,9 @@ export interface TusUploadLike {
 
 export type TusUploadFactory = (file: File | Blob, options: TusUploadOptions) => TusUploadLike;
 
-export function buildStorageTusEndpoint(storageUrl: string) {
+const RESUMABLE_PATH = "/storage/v1/upload/resumable";
+
+function parseStorageOrigin(storageUrl: string) {
   let url: URL;
 
   try {
@@ -54,16 +56,26 @@ export function buildStorageTusEndpoint(storageUrl: string) {
     throw new Error("Storage configuration is invalid.");
   }
 
-  const hostname =
-    url.hostname.endsWith(".supabase.co") &&
-    !url.hostname.endsWith(".storage.supabase.co")
-      ? url.hostname.replace(
-          /\.supabase\.co$/,
-          ".storage.supabase.co",
-        )
-      : url.hostname;
+  return url;
+}
 
-  return `${url.protocol}//${hostname}${url.port ? `:${url.port}` : ""}/storage/v1/upload/resumable/sign`;
+function isSupabaseProjectOrigin(url: URL) {
+  return /^[a-z0-9-]+\.supabase\.co$/i.test(url.hostname);
+}
+
+function productionStorageOrigin(url: URL) {
+  const projectRef = url.hostname.slice(0, -".supabase.co".length);
+  return `${url.protocol}//${projectRef}.storage.supabase.co`;
+}
+
+export function buildStorageTusEndpoint(storageUrl: string) {
+  const url = parseStorageOrigin(storageUrl);
+
+  if (isSupabaseProjectOrigin(url)) {
+    return `${productionStorageOrigin(url)}${RESUMABLE_PATH}/sign`;
+  }
+
+  return `${url.origin}${RESUMABLE_PATH}`;
 }
 
 export function buildSignedTusOptions(input: SignedTusConfiguration) {
