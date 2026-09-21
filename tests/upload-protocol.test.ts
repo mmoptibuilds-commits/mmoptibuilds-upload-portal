@@ -37,7 +37,7 @@ describe("signed Supabase resumable upload protocol", () => {
     });
 
     assert.deepEqual(options, {
-      endpoint: "https://project-ref.storage.supabase.co/storage/v1/upload/resumable",
+      endpoint: "https://project-ref.storage.supabase.co/storage/v1/upload/resumable/sign",
       headers: { "x-signature": "short-lived-upload-token" },
       metadata: {
         bucketName: "client-uploads",
