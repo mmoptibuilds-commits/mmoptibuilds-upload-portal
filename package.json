@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "node --require ./scripts/compat-memory.cjs ./node_modules/next/dist/bin/next dev --turbopack -H 127.0.0.1",
+    "dev:webpack": "node --require ./scripts/compat-memory.cjs ./node_modules/next/dist/bin/next dev --webpack -H 127.0.0.1",
     "build": "node --require ./scripts/compat-memory.cjs ./node_modules/next/dist/bin/next build",
     "start": "next start",
     "lint": "eslint .",
@@ -21,18 +24,24 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
+    "@supabase/supabase-js": "^2.116.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
-    "google-auth-library": "^11.1.0",
     "motion": "^12.23.24",
     "next": "16.3.5",
     "nodemailer": "^10.0.10",
     "postgres": "^3.4.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "server-only": "^0.0.1",
+    "tailwind-merge": "^3.7.0",
+    "tus-js-client": "4.3.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.15.3",
     "@types/nodemailer": "^6.4.17",
     "@types/react": "^19.2.2",
@@ -40,9 +49,9 @@
     "drizzle-kit": "^0.31.4",
     "eslint": "^9.36.0",
     "eslint-config-next": "16.3.5",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.2",
-    "typescript-eslint": "^8.46.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "typescript-eslint": "^8.46.1"
   }
 }

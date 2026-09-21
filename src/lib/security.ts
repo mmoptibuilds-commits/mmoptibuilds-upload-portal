@@ -1,18 +1,31 @@
 import { randomBytes } from "node:crypto";
+import { normalizeStorageRelativePath } from "@/lib/storage-path";
 
 export function opaqueId(bytes = 32) { return randomBytes(bytes).toString("base64url"); }
 
 export function safeRelativePath(input: string) {
-  const normalized = input.normalize("NFC").replace(/\\/g, "/").replace(/^\/+/, "");
-  const parts = normalized.split("/").filter(Boolean);
-  if (!parts.length || parts.some((part) => part === "." || part === ".." || /[\u0000-\u001f]/.test(part))) {
-    throw new Error("The file path is invalid.");
-  }
-  return parts.join("/");
+  return normalizeStorageRelativePath(input);
 }
 
 export function safeRedirect(value: string | null, fallback = "/upload") {
   return value && value.startsWith("/") && !value.startsWith("//") ? value : fallback;
+}
+
+/**
+ * State-changing browser requests must originate from this application.
+ * Missing Origin is allowed for non-browser clients and local health tooling;
+ * Fetch Metadata still rejects an explicitly cross-site request.
+ */
+export function isSameOriginRequest(request: Pick<Request, "headers" | "url">) {
+  const origin = request.headers.get("origin");
+  if (origin) {
+    try {
+      return origin === new URL(request.url).origin;
+    } catch {
+      return false;
+    }
+  }
+  return request.headers.get("sec-fetch-site") !== "cross-site";
 }
 
 export function errorMessage(status: number, fallback = "The request could not be completed.") {

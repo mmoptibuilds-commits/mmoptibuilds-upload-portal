@@ -1,6 +1,8 @@
 "use client";
 import { type ButtonHTMLAttributes, type PropsWithChildren, type ReactNode, type SVGProps, useRef } from "react";
 import { useReducedMotion } from "motion/react";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 
 export function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B", "KB", "MB", "GB", "TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 export function formatDuration(seconds: number) { if (!Number.isFinite(seconds) || seconds < 1) return "Calculating"; const m = Math.floor(seconds / 60); const s = Math.floor(seconds % 60); return m ? `${m}m ${s}s` : `${s}s`; }
@@ -34,6 +36,7 @@ export function RippleButton({ children, className = "", onPointerDown, ...props
     onPointerDown?.(event);
   }} {...props}>{children}</button>;
 }
-export function Status({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "blue" | "green" | "orange" | "red" }) { return <span className={`status status-${tone}`}><i />{children}</span>; }
-export function EmptyState({ title, detail, action }: { title: string; detail: string; action?: ReactNode }) { return <div className="empty-state"><div className="empty-mark">M</div><h2>{title}</h2><p>{detail}</p>{action}</div>; }
-export function Metric({ label, value, detail }: { label: string; value: ReactNode; detail?: string }) { return <article className="metric"><p>{label}</p><strong>{value}</strong>{detail && <span>{detail}</span>}</article>; }
+export function Status({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "blue" | "green" | "orange" | "red" }) { const variant = tone === "green" ? "success" : tone === "orange" ? "warning" : tone === "red" ? "danger" : tone === "blue" ? "default" : "muted"; return <Badge variant={variant} className={`status status-${tone}`}><i />{children}</Badge>; }
+export function EmptyState({ title, detail, action }: { title: string; detail: string; action?: ReactNode }) { return <Card className="empty-state"><div className="empty-mark">M</div><h2>{title}</h2><p>{detail}</p>{action}</Card>; }
+export function Metric({ label, value, detail }: { label: string; value: ReactNode; detail?: string }) { return <Card className="metric"><p>{label}</p><strong>{value}</strong>{detail && <span>{detail}</span>}</Card>; }
+export function CustodyStrip({ route, children }: { route: string; children: ReactNode }) { return <div className="custody-strip" aria-hidden="true"><span>{route}</span><code>{children}</code></div>; }

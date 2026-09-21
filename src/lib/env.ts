@@ -7,12 +7,9 @@ const optionalPort = z.preprocess((value) => value === "" ? undefined : value, z
 const serverSchema = z.object({
   DATABASE_URL: z.string().url(),
   AUTH_SECRET: z.string().min(32),
-  GOOGLE_PROJECT_ID: z.string().min(1),
-  GOOGLE_CLIENT_EMAIL: z.string().email(),
-  GOOGLE_PRIVATE_KEY: z.string().min(1),
-  GOOGLE_DRIVE_ROOT_FOLDER_ID: z.string().min(1),
-  GOOGLE_DRIVE_SHARED_DRIVE_ID: optionalString,
-  GOOGLE_IMPERSONATE_EMAIL: optionalEmail,
+  SUPABASE_URL: z.string().url(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  SUPABASE_STORAGE_BUCKET: z.string().min(1),
   SMTP_HOST: optionalString,
   SMTP_PORT: optionalPort,
   SMTP_USER: optionalEmail,
@@ -29,7 +26,7 @@ export function getEnv(): ServerEnv {
     const fields = parsed.error.issues.map((issue) => issue.path.join(".")).join(", ");
     throw new Error(`Server configuration is incomplete: ${fields}. Check .env.local.`);
   }
-  return { ...parsed.data, GOOGLE_PRIVATE_KEY: parsed.data.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n") };
+  return parsed.data;
 }
 
 export function getOptionalConfig() {
@@ -37,7 +34,7 @@ export function getOptionalConfig() {
   return {
     database: Boolean(process.env.DATABASE_URL),
     auth: Boolean(process.env.AUTH_SECRET && process.env.AUTH_SECRET.length >= 32),
-    drive: Boolean(process.env.GOOGLE_PROJECT_ID && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID),
+    storage: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_STORAGE_BUCKET),
     email: smtpReady,
   };
 }

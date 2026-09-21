@@ -1,89 +1,200 @@
 import { NextResponse } from "next/server";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { notificationEvents, uploadBatches, uploadFiles } from "@/lib/db/schema";
 import { requireUser, AuthError } from "@/lib/auth";
-import { inspectDriveFile } from "@/lib/drive";
 import { sendCompletionEmail } from "@/lib/email";
-import type { NotificationStatus } from "@/lib/types";
-import { z } from "zod";
+import { isSameOriginRequest } from "@/lib/security";
+import { verifyStorageObject } from "@/lib/storage";
+import {
+  buildNotificationEventUpdate,
+  createUploadCompletionOrchestrator,
+  decideNotificationClaimForTransaction,
+  decideUploadCompletionTransaction,
+  NOTIFICATION_CLAIM_TTL_MS,
+  mapUploadCompletionResult,
+  parseUploadCompletionRequest,
+  UploadCompletionError,
+  type StorageObjectVerification,
+  type UploadCompletionSnapshot,
+} from "@/lib/upload-completion";
+import type { CompletionNotificationInput, NotificationStatus } from "@/lib/types";
 
-const schema = z.object({ fileId: z.string().uuid(), driveFileId: z.string().min(1).max(255) });
-
-async function deliverCompletionNotification(input: { batchId: string; username: string; fileCount: number; totalBytes: number; completedAt: Date; driveUrl: string }): Promise<NotificationStatus> {
-  return db().transaction(async (tx) => {
+async function deliverCompletionNotification(input: CompletionNotificationInput): Promise<NotificationStatus> {
+  const claim = await db().transaction(async (tx) => {
     // Serialize retries so two Vercel instances cannot send at the same time.
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`notification:${input.batchId}`}))`);
     const batch = (await tx.select({ notificationStatus: uploadBatches.notificationStatus }).from(uploadBatches).where(eq(uploadBatches.id, input.batchId)).limit(1))[0];
-    if (!batch) return "failed";
-    if (batch.notificationStatus === "sent" || batch.notificationStatus === "not_configured") return batch.notificationStatus;
-    let notificationStatus: NotificationStatus = "not_configured";
-    let error: string | undefined;
-    try {
-      notificationStatus = await sendCompletionEmail(input);
-    } catch (caught) {
-      notificationStatus = "failed";
-      error = caught instanceof Error ? caught.message : "Unknown email error";
-    }
-    try { await tx.insert(notificationEvents).values({ batchId: input.batchId, status: notificationStatus, error }); } catch { /* delivery state is still persisted below */ }
+    if (!batch) return { kind: "skip" as const, status: "failed" as NotificationStatus };
+    const now = new Date();
+    const claimDecision = await decideNotificationClaimForTransaction({
+      notificationStatus: batch.notificationStatus,
+      now,
+      ttlMs: NOTIFICATION_CLAIM_TTL_MS,
+    }, async () => {
+      const activeClaim = (await tx
+        .select({ createdAt: notificationEvents.createdAt })
+        .from(notificationEvents)
+        .where(and(eq(notificationEvents.batchId, input.batchId), eq(notificationEvents.status, "pending"), gt(notificationEvents.createdAt, new Date(now.getTime() - NOTIFICATION_CLAIM_TTL_MS))))
+        .limit(1))[0];
+      return activeClaim?.createdAt ?? null;
+    });
+    if (claimDecision.kind === "skip") return claimDecision;
+    const event = (await tx.insert(notificationEvents).values({ batchId: input.batchId, status: "pending" }).returning({ id: notificationEvents.id }))[0];
+    await tx.update(uploadBatches).set({ notificationStatus: "pending" }).where(eq(uploadBatches.id, input.batchId));
+    return { kind: "claim" as const, eventId: event.id };
+  });
+  if (claim.kind === "skip") return claim.status;
+
+  let notificationStatus: NotificationStatus = "not_configured";
+  let providerError: unknown;
+  try {
+    // SMTP delivery deliberately runs after the claim transaction has ended.
+    notificationStatus = await sendCompletionEmail(input);
+  } catch (caught) {
+    notificationStatus = "failed";
+    providerError = caught;
+  }
+
+  await db().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`notification:${input.batchId}`}))`);
+    await tx.update(notificationEvents).set(buildNotificationEventUpdate(notificationStatus, providerError)).where(eq(notificationEvents.id, claim.eventId));
     await tx.update(uploadBatches).set({ notificationStatus }).where(eq(uploadBatches.id, input.batchId));
-    return notificationStatus;
+  });
+  return notificationStatus;
+}
+
+async function loadOwnedCompletion(input: { userId: string; username: string; fileId: string }): Promise<UploadCompletionSnapshot | null> {
+  const row = (await db()
+    .select({
+      fileId: uploadFiles.id,
+      batchId: uploadFiles.batchId,
+      relativePath: uploadFiles.relativePath,
+      storagePath: uploadFiles.storagePath,
+      size: uploadFiles.size,
+      mimeType: uploadFiles.mimeType,
+      fileStatus: uploadFiles.status,
+      batchStatus: uploadBatches.status,
+    })
+    .from(uploadFiles)
+    .innerJoin(uploadBatches, eq(uploadFiles.batchId, uploadBatches.id))
+    .where(and(eq(uploadFiles.id, input.fileId), eq(uploadBatches.userId, input.userId)))
+    .limit(1))[0];
+  return row ? { ...row, userId: input.userId, username: input.username } : null;
+}
+
+function completionNotification(
+  snapshot: UploadCompletionSnapshot,
+  batch: { fileCount: number; totalBytes: number },
+  completedAt: Date,
+): CompletionNotificationInput {
+  return {
+    batchId: snapshot.batchId,
+    username: snapshot.username,
+    fileCount: batch.fileCount,
+    totalBytes: batch.totalBytes,
+    completedAt,
+  };
+}
+
+async function finalizeVerifiedCompletion(snapshot: UploadCompletionSnapshot, verification: StorageObjectVerification | null) {
+  return db().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`batch:${snapshot.batchId}`}))`);
+
+    // Ownership and current manifest state are re-read after taking the lock;
+    // the pre-verification snapshot is never sufficient authority for writes.
+    const batch = (await tx
+      .select({
+        id: uploadBatches.id,
+        userId: uploadBatches.userId,
+        status: uploadBatches.status,
+        fileCount: uploadBatches.fileCount,
+        totalBytes: uploadBatches.totalBytes,
+        completedAt: uploadBatches.completedAt,
+      })
+      .from(uploadBatches)
+      .where(and(eq(uploadBatches.id, snapshot.batchId), eq(uploadBatches.userId, snapshot.userId)))
+      .limit(1))[0];
+    if (!batch) return { kind: "unavailable" as const };
+
+    const current = (await tx
+      .select({
+        id: uploadFiles.id,
+        batchId: uploadFiles.batchId,
+        relativePath: uploadFiles.relativePath,
+        storagePath: uploadFiles.storagePath,
+        size: uploadFiles.size,
+        mimeType: uploadFiles.mimeType,
+        status: uploadFiles.status,
+      })
+      .from(uploadFiles)
+      .where(and(eq(uploadFiles.id, snapshot.fileId), eq(uploadFiles.batchId, batch.id)))
+      .limit(1))[0];
+    if (!current) return { kind: "unavailable" as const };
+
+    const counts = batch.status === "completed" ? null : (await tx
+      .select({
+        total: sql<number>`count(*)::int`,
+        completed: sql<number>`count(*) filter (where ${uploadFiles.status} = 'completed')::int`,
+      })
+      .from(uploadFiles)
+      .where(eq(uploadFiles.batchId, batch.id)))[0];
+    const decision = decideUploadCompletionTransaction({ snapshot, batch, current, verification, counts, now: new Date() });
+    if (decision.kind === "unavailable") return decision;
+    if (decision.kind === "terminal") return decision;
+    if (decision.kind === "verification_mismatch") return decision;
+
+    if (decision.fileUpdate) {
+      const updated = (await tx
+        .update(uploadFiles)
+        .set(decision.fileUpdate)
+        .where(and(eq(uploadFiles.id, current.id), eq(uploadFiles.batchId, batch.id), ne(uploadFiles.status, "completed")))
+        .returning({ id: uploadFiles.id }))[0];
+      if (!updated) return { kind: "unavailable" as const };
+    }
+    if (decision.kind === "partial") return { kind: "partial" as const };
+
+    if (decision.transitioned) {
+      const transitioned = (await tx
+        .update(uploadBatches)
+        .set({ status: "completed", completedBytes: batch.totalBytes, completedAt: decision.completedAt })
+        .where(and(eq(uploadBatches.id, batch.id), eq(uploadBatches.userId, snapshot.userId), eq(uploadBatches.status, batch.status)))
+        .returning({ id: uploadBatches.id }))[0];
+      if (!transitioned) return { kind: "unavailable" as const };
+    }
+    return {
+      kind: "complete" as const,
+      transitioned: decision.transitioned,
+      notification: completionNotification(snapshot, batch, decision.completedAt),
+    };
   });
 }
 
+const completeUpload = createUploadCompletionOrchestrator({
+  loadOwned: loadOwnedCompletion,
+  verify: verifyStorageObject,
+  finalize: finalizeVerifiedCompletion,
+  notify: deliverCompletionNotification,
+});
+
 export async function POST(request: Request) {
   try {
-    const user = await requireUser(); const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "The upload completion data is invalid." }, { status: 400 });
-    const file = (await db().select({ file: uploadFiles, batch: uploadBatches }).from(uploadFiles).innerJoin(uploadBatches, eq(uploadFiles.batchId, uploadBatches.id)).where(and(eq(uploadFiles.id, parsed.data.fileId), eq(uploadBatches.userId, user.id))).limit(1))[0];
-    if (!file) return NextResponse.json({ error: "Upload file not found." }, { status: 404 });
-    const driveUrl = `https://drive.google.com/drive/folders/${file.batch.driveFolderId}`;
-    if (file.batch.status === "completed") {
-      const notificationStatus = await deliverCompletionNotification({ batchId: file.batch.id, username: user.username, fileCount: file.batch.fileCount, totalBytes: file.batch.totalBytes, completedAt: file.batch.completedAt ?? new Date(), driveUrl });
-      return NextResponse.json({ ok: true, batchComplete: true, notificationStatus });
-    }
-    let verifiedDriveFileId: string | undefined;
-    if (file.file.status !== "completed") {
-      // Never trust a browser supplied Drive id alone: validate hierarchy and immutable metadata.
-      const driveFile = await inspectDriveFile(parsed.data.driveFileId);
-      const driveSize = driveFile.size === undefined && file.file.size === 0 ? 0 : Number(driveFile.size);
-      const expectedMime = file.file.mimeType || "application/octet-stream";
-      if (!driveFile.parents?.includes(file.file.driveParentId) || driveFile.name !== file.file.fileName || !Number.isSafeInteger(driveSize) || driveSize !== file.file.size || (expectedMime !== "application/octet-stream" && driveFile.mimeType && driveFile.mimeType !== expectedMime)) return NextResponse.json({ error: "Drive could not verify the uploaded file in this batch." }, { status: 502 });
-      verifiedDriveFileId = driveFile.id;
-    } else if (file.file.driveFileId !== parsed.data.driveFileId) {
-      return NextResponse.json({ error: "This upload file was already finalized with a different Drive object." }, { status: 409 });
-    }
-    const completion = await db().transaction(async (tx) => {
-      // One batch can receive several concurrent completion requests. Keep the
-      // file update, count check, and batch transition in one transaction so a
-      // batch cannot be marked complete from a stale count.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`batch:${file.batch.id}`}))`);
-      if (verifiedDriveFileId) {
-        // This update is intentionally conditional so a safe retry can never
-        // move a completed row backwards.
-        await tx.update(uploadFiles).set({ status: "completed", completedBytes: file.file.size, driveFileId: verifiedDriveFileId, resumableSessionUrl: null, completedAt: new Date() }).where(and(eq(uploadFiles.id, file.file.id), ne(uploadFiles.status, "completed")));
-      }
-      const currentFile = (await tx.select({ status: uploadFiles.status, driveFileId: uploadFiles.driveFileId }).from(uploadFiles).where(eq(uploadFiles.id, file.file.id)).limit(1))[0];
-      if (!currentFile) return { kind: "missing" as const };
-      if (currentFile.status === "completed" && currentFile.driveFileId && currentFile.driveFileId !== parsed.data.driveFileId) return { kind: "conflict" as const };
-      const counts = (await tx.select({ total: sql<number>`count(*)::int`, completed: sql<number>`count(*) filter (where ${uploadFiles.status} = 'completed')::int` }).from(uploadFiles).where(eq(uploadFiles.batchId, file.batch.id)))[0];
-      if (!counts || counts.total !== file.batch.fileCount || counts.completed !== file.batch.fileCount) return { kind: "partial" as const };
-      const completedAt = new Date();
-      const transitioned = (await tx.update(uploadBatches).set({ status: "completed", completedBytes: file.batch.totalBytes, completedAt }).where(and(eq(uploadBatches.id, file.batch.id), ne(uploadBatches.status, "completed"))).returning({ id: uploadBatches.id }))[0];
-      return transitioned ? { kind: "transitioned" as const, completedAt } : { kind: "already-complete" as const };
-    });
-    if (completion.kind === "conflict") return NextResponse.json({ error: "This upload file was already finalized with a different Drive object." }, { status: 409 });
-    if (completion.kind === "missing") return NextResponse.json({ error: "Upload file not found." }, { status: 404 });
-    if (completion.kind === "partial") return NextResponse.json({ ok: true, batchComplete: false });
-    if (completion.kind === "already-complete") {
-      const notificationStatus = await deliverCompletionNotification({ batchId: file.batch.id, username: user.username, fileCount: file.batch.fileCount, totalBytes: file.batch.totalBytes, completedAt: file.batch.completedAt ?? new Date(), driveUrl });
-      return NextResponse.json({ ok: true, batchComplete: true, notificationStatus });
-    }
-    const completedAt = completion.completedAt;
-    const notificationStatus = await deliverCompletionNotification({ batchId: file.batch.id, username: user.username, fileCount: file.batch.fileCount, totalBytes: file.batch.totalBytes, completedAt, driveUrl });
-    return NextResponse.json({ ok: true, batchComplete: true, notificationStatus });
+    if (!isSameOriginRequest(request)) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+    const user = await requireUser();
+    const parsed = await parseUploadCompletionRequest(request);
+    if (parsed.kind === "invalid") return NextResponse.json({ error: "The upload completion data is invalid." }, { status: 400 });
+
+    const result = await completeUpload({ userId: user.id, username: user.username, fileId: parsed.data.fileId });
+    const response = mapUploadCompletionResult(result);
+    return NextResponse.json(response.body, { status: response.status });
   } catch (error) {
     if (error instanceof AuthError) return NextResponse.json({ error: error.message }, { status: error.status });
-    return NextResponse.json({ error: "The uploaded file could not be finalized. It may still be in Drive; retry safely." }, { status: 502 });
+    if (error instanceof UploadCompletionError) {
+      const message = error.code === "verification_failed"
+        ? "Storage could not verify the uploaded file. Retry safely."
+        : "The uploaded file could not be finalized. Retry safely.";
+      return NextResponse.json({ error: message }, { status: 502 });
+    }
+    return NextResponse.json({ error: "The uploaded file could not be finalized. Retry safely." }, { status: 502 });
   }
 }

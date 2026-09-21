@@ -8,6 +8,16 @@ const seeds = [
   { username: "twaha", password: process.env.INITIAL_TWAHA_PASSWORD, role: "user" as const },
   { username: "admin", password: process.env.INITIAL_ADMIN_PASSWORD, role: "admin" as const },
 ];
+
+async function closeCliDatabase() {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closeDb(),
+    new Promise<void>((resolve) => { timeout = setTimeout(resolve, 6_000); }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+}
+
 try {
   for (const seed of seeds) {
     if (!seed.password) throw new Error(`INITIAL_${seed.username.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_PASSWORD is required for secure setup.`);
@@ -17,5 +27,7 @@ try {
     console.log(`${seed.username} created.`);
   }
 } finally {
-  await closeDb();
+  await closeCliDatabase();
 }
+
+process.exit(0);
