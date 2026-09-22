@@ -11,9 +11,9 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
 
   return (
     <main className="route-fallback" role="alert">
-      <span className="eyebrow">ROUTE INTERRUPTED</span>
-      <h1>This view could not load.</h1>
-      <p>Your session is still protected. Try the view again, or return to the sign-in screen if the problem continues.</p>
+      <span className="route-kicker">Client upload portal</span>
+      <h1>Something went wrong</h1>
+      <p>Refresh this view. If the problem continues, contact mmoptibuilds.</p>
       <button className="button button-primary" type="button" onClick={reset}>Try again</button>
     </main>
   );

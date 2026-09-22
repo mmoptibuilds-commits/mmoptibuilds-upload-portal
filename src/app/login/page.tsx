@@ -1,12 +1,100 @@
 "use client";
+
 import { type FormEvent, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CustodyStrip, Icon, RippleButton } from "@/components/ui";
-import BeamsBackground from "@/components/ui/beams-background";
+import { ArrowRight, Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { RedirectingLoader } from "@/components/ui/v-spinner-6";
 import { fetchWithTimeout } from "@/lib/async-timeouts";
 
+type LoginPhase = "idle" | "submitting" | "redirecting";
+
 export default function LoginPage() {
-  const reduce = useReducedMotion(); const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [remember, setRemember] = useState(true); const [showPassword, setShowPassword] = useState(false); const [caps, setCaps] = useState(false); const [error, setError] = useState(""); const [invalidField, setInvalidField] = useState<"username" | "password" | "form" | null>(null); const [loading, setLoading] = useState(false);
-  async function submit(event: FormEvent) { event.preventDefault(); setError(""); setInvalidField(null); if (!username.trim()) { setError("Enter your username."); setInvalidField("username"); document.getElementById("username")?.focus(); return; } if (!password) { setError("Enter your password."); setInvalidField("password"); document.getElementById("password")?.focus(); return; } setLoading(true); try { const res = await fetchWithTimeout("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: username.trim(), password, remember }) }, 15_000, "Signing in"); const data = await res.json().catch(() => null); if (!res.ok) { setError(data?.error || "Sign-in could not be completed."); setInvalidField("form"); document.getElementById("password")?.focus(); return; } if (data?.role !== "admin" && data?.role !== "user") { setError("Sign-in response was invalid. Please try again."); setInvalidField("form"); return; } window.location.replace(data.role === "admin" ? "/admin" : "/upload"); } catch { setError("Sign-in is temporarily unavailable. Please try again."); setInvalidField("form"); } finally { setLoading(false); } }
-  return <div className="login-page-shell"><div className="beams-layer" aria-hidden="true"><BeamsBackground intensity="strong" /></div><main className="login-page" aria-labelledby="login-heading"><motion.section className="login-intro" initial={reduce ? false : { opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 130, damping: 20 }}><div className="brand-lockup"><b>MM</b><span>mmoptibuilds<small>PRIVATE DELIVERY NETWORK</small></span></div><div className="intro-copy"><CustodyStrip route="LOGIN">AUTH:CLIENT ▦ HASH:MASKED ▦ HANDOFF:PRIVATE</CustodyStrip><span className="eyebrow">SECURE ASSET TRANSFER · 01</span><h1>Built for the files <em>that build the work.</em></h1><p>A private intake workspace for high-resolution assets, source files, and complete project folders. Your handoff stays scoped to the account that received it.</p></div><div className="signal-panel" aria-label="Transfer status"><span>CHAIN STATUS</span><b><i />Private handoff ready</b><em>[auth]──[queue]──[handoff] · no public registration</em></div></motion.section><motion.section className="login-card material-glass" initial={reduce ? false : { opacity: 0, scale: 0.96, x: 32 }} animate={{ opacity: 1, scale: 1, x: 0 }} transition={{ type: "spring", stiffness: 125, damping: 19, delay: reduce ? 0 : 0.1 }}><div className="card-heading"><span className="eyebrow">CLIENT ACCESS</span><h2 id="login-heading">Upload ready.</h2><p id="login-help">Sign in with the credentials sent by mmoptibuilds.</p></div><form onSubmit={submit} noValidate aria-describedby="login-help"><div className="floating-field"><input id="username" value={username} onChange={(e) => { setUsername(e.target.value); if (invalidField === "username") { setInvalidField(null); setError(""); } }} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} inputMode="text" aria-describedby={error ? "login-error" : undefined} aria-invalid={invalidField === "username" || undefined} required placeholder=" " /><label htmlFor="username">Username</label></div><div className="floating-field"><input id="password" type={showPassword ? "text" : "password"} value={password} onChange={(e) => { setPassword(e.target.value); if (invalidField === "password") { setInvalidField(null); setError(""); } }} onKeyUp={(e) => setCaps(e.getModifierState("CapsLock"))} onKeyDown={(e) => setCaps(e.getModifierState("CapsLock"))} autoComplete="current-password" aria-describedby={error ? "login-error" : undefined} aria-invalid={invalidField === "password" || undefined} required placeholder=" " /><label htmlFor="password">Password</label><button className="password-toggle" type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword(!showPassword)}>{showPassword ? "HIDE" : "SHOW"}</button></div><AnimatePresence>{caps && <motion.p className="field-note warning" role="status" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>Caps Lock is on.</motion.p>}</AnimatePresence><label className="check"><input id="remember" type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /><span />Remember this device for 30 days</label><AnimatePresence>{error && <motion.p id="login-error" role="alert" aria-live="assertive" className="form-error" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>{error}</motion.p>}</AnimatePresence><RippleButton className="button-primary login-submit" type="submit" aria-busy={loading} disabled={loading}>{loading ? "Checking secure access…" : "Enter workspace"}<Icon name="arrow-right" size={18} /></RippleButton></form><small className="login-footer">No public registration. Need access? Contact mmoptibuilds.</small></motion.section></main></div>;
+  const reduce = useReducedMotion();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
+  const [caps, setCaps] = useState(false);
+  const [error, setError] = useState("");
+  const [invalidField, setInvalidField] = useState<"username" | "password" | "form" | null>(null);
+  const [phase, setPhase] = useState<LoginPhase>("idle");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (phase !== "idle") return;
+
+    setError("");
+    setInvalidField(null);
+    if (!username.trim()) {
+      setError("Enter your username.");
+      setInvalidField("username");
+      document.getElementById("username")?.focus();
+      return;
+    }
+    if (!password) {
+      setError("Enter your password.");
+      setInvalidField("password");
+      document.getElementById("password")?.focus();
+      return;
+    }
+
+    setPhase("submitting");
+    try {
+      const response = await fetchWithTimeout("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password, remember }),
+      }, 15_000, "Signing in");
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.error || "Sign-in could not be completed.");
+        setInvalidField("form");
+        setPhase("idle");
+        document.getElementById("password")?.focus();
+        return;
+      }
+      if (data?.role !== "admin" && data?.role !== "user") {
+        setError("Sign-in response was invalid. Please try again.");
+        setInvalidField("form");
+        setPhase("idle");
+        return;
+      }
+
+      setPhase("redirecting");
+      const destination = data.role === "admin" ? "/admin" : "/upload";
+      window.setTimeout(() => window.location.replace(destination), reduce ? 0 : 240);
+    } catch {
+      setError("Sign-in is temporarily unavailable. Please try again.");
+      setInvalidField("form");
+      setPhase("idle");
+    }
+  }
+
+  const submitting = phase === "submitting";
+  const describedBy = error ? "login-help login-error" : "login-help";
+
+  return <main className="login-page-shell" aria-labelledby={phase === "redirecting" ? "redirecting-heading" : "login-heading"}>
+    <div className="login-dot-field" aria-hidden="true" />
+    <div className="login-brand" aria-label="mmoptibuilds"><span>mm</span><b>mmoptibuilds</b></div>
+    {phase === "redirecting" ? <div className="redirecting-screen"><h1 id="redirecting-heading" className="sr-only">Setting up your workspace</h1><RedirectingLoader /></div> : <motion.section className="login-card" initial={reduce ? false : { opacity: 0, y: 10, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.24, ease: [0.23, 1, 0.32, 1] }}>
+      <header className="login-heading">
+        <p>Client upload portal</p>
+        <h1 id="login-heading">Sign in to upload files</h1>
+        <span id="login-help">Use the username and password provided by mmoptibuilds.</span>
+      </header>
+      <form onSubmit={submit} noValidate aria-describedby={describedBy}>
+        <label className="field-label" htmlFor="username">Username
+          <input id="username" value={username} onChange={(event) => { setUsername(event.target.value); if (invalidField === "username") { setInvalidField(null); setError(""); } }} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} inputMode="text" aria-invalid={invalidField === "username" || undefined} aria-describedby={error ? "login-error" : undefined} required />
+        </label>
+        <label className="field-label password-label" htmlFor="password">Password
+          <span className="password-input-wrap"><input id="password" type={showPassword ? "text" : "password"} value={password} onChange={(event) => { setPassword(event.target.value); if (invalidField === "password") { setInvalidField(null); setError(""); } }} onKeyUp={(event) => setCaps(event.getModifierState("CapsLock"))} onKeyDown={(event) => setCaps(event.getModifierState("CapsLock"))} autoComplete="current-password" aria-invalid={invalidField === "password" || undefined} aria-describedby={error ? "login-error" : undefined} required /><button className="password-toggle" type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span>
+        </label>
+        {caps && <p className="field-note warning" role="status">Caps Lock is on.</p>}
+        <label className="check"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /><span aria-hidden="true" />Remember this device for 30 days</label>
+        {error && <p id="login-error" className="form-error" role="alert">{error}</p>}
+        <button className="button button-primary login-submit" type="submit" aria-busy={submitting} disabled={submitting}>{submitting ? <><LoaderCircle className="spinner" size={16} aria-hidden="true" />Signing in…</> : <>Sign in<ArrowRight size={16} aria-hidden="true" /></>}</button>
+      </form>
+      <p className="login-footer">Access is invitation-only.</p>
+    </motion.section>}
+  </main>;
 }
