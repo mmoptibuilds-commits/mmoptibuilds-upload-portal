@@ -3,9 +3,9 @@ import Link from "next/link";
 export default function NotFound() {
   return (
     <main className="route-fallback">
-      <span className="eyebrow">404 / NOT IN THE LEDGER</span>
-      <h1>That workspace view is gone.</h1>
-      <p>The address does not point to an available portal route.</p>
+      <span className="route-kicker">Client upload portal</span>
+      <h1>Page not found</h1>
+      <p>This page is unavailable. Return to the sign-in screen to continue.</p>
       <Link className="button button-primary" href="/login">Return to sign in</Link>
     </main>
   );

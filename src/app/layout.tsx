@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
-import { DM_Mono, Space_Grotesk } from "next/font/google";
+import { DM_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
+const manrope = Manrope({
   subsets: ["latin"],
   display: "swap",
-  variable: "--font-space-grotesk",
+  variable: "--font-manrope",
 });
 
 const dmMono = DM_Mono({
@@ -15,7 +15,12 @@ const dmMono = DM_Mono({
   variable: "--font-dm-mono",
 });
 
-export const metadata: Metadata = { title: "mmoptibuilds · Private delivery", description: "A private client workspace for sending project files to mmoptibuilds.", robots: { index: false, follow: false } };
+export const metadata: Metadata = {
+  title: "mmoptibuilds · Client upload portal",
+  description: "A private client upload portal for mmoptibuilds.",
+  robots: { index: false, follow: false },
+};
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en" className={`dark ${spaceGrotesk.variable} ${dmMono.variable}`}><body>{children}</body></html>;
+  return <html lang="en" className={`dark ${manrope.variable} ${dmMono.variable}`}><body>{children}</body></html>;
 }

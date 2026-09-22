@@ -5,7 +5,7 @@ import { currentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { uploadBatches } from "@/lib/db/schema";
 import { AppShell } from "@/components/app-shell";
-import { CustodyStrip, EmptyState, Status } from "@/components/ui";
+import { EmptyState, formatBytes, formatStatus, Status } from "@/components/ui";
 
 const PAGE_SIZE = 50;
 
@@ -19,8 +19,8 @@ export default async function HistoryPage({ searchParams }: { searchParams: Prom
   const batches = rows.slice(0, PAGE_SIZE);
 
   return <AppShell user={user}>
-    <header className="page-header"><div><CustodyStrip route="HISTORY">RECEIPTS:READONLY ▦ FILES:PRIVATE ▦ LINKS:NONE</CustodyStrip><span className="eyebrow">CLIENT RECORD</span><h1>Your latest uploads</h1><p>Submission records only. Files remain private and cannot be downloaded here.</p></div></header>
-    {!batches.length ? <EmptyState title="No uploads on this page." detail={page ? "Go to the previous page to view newer transfers." : "Your completed transfers will appear here, without exposing file access."} /> : <ul className="history-list">{batches.map((batch) => <li className="history-card" key={batch.id}><div><Status tone={batch.status === "completed" ? "green" : batch.status === "failed" ? "red" : "orange"}>{batch.status.replace("_", " ")}</Status><h2>{batch.displayName}</h2><p>{batch.fileCount} files · {(batch.totalBytes / 1024 / 1024).toFixed(1)} MB</p></div><time dateTime={batch.createdAt.toISOString()}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(batch.createdAt)}</time></li>)}</ul>}
+    <header className="page-header"><div><h1>Upload history</h1><p>Completed and in-progress uploads are listed here. Files cannot be opened or downloaded from this portal.</p></div></header>
+    {!batches.length ? <EmptyState title={page ? "No uploads on this page" : "No uploads yet"} detail={page ? "Go to the previous page to view newer uploads." : "Completed and in-progress uploads will appear here."} /> : <ul className="history-list">{batches.map((batch) => <li className="history-row" key={batch.id}><div><Status tone={batch.status === "completed" ? "green" : batch.status === "failed" ? "red" : "orange"}>{formatStatus(batch.status)}</Status><h2>{batch.displayName}</h2></div><span>{batch.fileCount} files · {formatBytes(batch.totalBytes)}</span><time dateTime={batch.createdAt.toISOString()}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(batch.createdAt)}</time></li>)}</ul>}
     {(page > 0 || hasNext) && <nav className="pagination" aria-label="Upload history pages">{page > 0 ? <Link className="button button-secondary" href={`/history?page=${page - 1}`}>Previous</Link> : <span /> }<span>Page {page + 1}</span>{hasNext ? <Link className="button button-secondary" href={`/history?page=${page + 1}`}>Next</Link> : <span />}</nav>}
   </AppShell>;
 }

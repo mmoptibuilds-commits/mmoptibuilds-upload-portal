@@ -1,6 +1,7 @@
 "use client";
 
 import { type ChangeEvent, type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Check, File, FilePlus2, Folder, FolderPlus, Pause, Play, Upload, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { MAX_CONCURRENCY } from "@/lib/constants";
 import { fetchWithTimeout } from "@/lib/async-timeouts";
@@ -15,7 +16,7 @@ import {
   uploadFailureMessage,
 } from "@/lib/upload-protocol";
 import type { UploadItem, UploadStatus } from "@/lib/types";
-import { CustodyStrip, EmptyState, formatBytes, formatDuration, Icon, RippleButton, Status } from "@/components/ui";
+import { EmptyState, formatBytes, formatDuration, formatStatus, Status } from "@/components/ui";
 
 const fileId = () => crypto.randomUUID();
 type Entry = FileSystemEntry & { isFile: boolean; isDirectory: boolean; file: (success: (file: File) => void, error?: (error: DOMException) => void) => void; createReader: () => FileSystemDirectoryReader };
@@ -54,7 +55,7 @@ function safeUploadPath(path: string) {
 
 type ActiveUpload = ReturnType<typeof createSignedTusUpload>;
 
-export function UploadWorkspace({ username, storageUrl, storageBucket }: { username: string; storageUrl: string; storageBucket: string }) {
+export function UploadWorkspace({ storageUrl, storageBucket }: { storageUrl: string; storageBucket: string }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const controllers = useRef(new Map<string, ActiveUpload>());
@@ -75,11 +76,11 @@ export function UploadWorkspace({ username, storageUrl, storageBucket }: { usern
     setOnline(navigator.onLine);
     const off = () => {
       setOnline(false);
-      setMessage("Connection lost. Uploads are paused safely.");
+      setMessage("Connection lost. Your upload is paused.");
       controllers.current.forEach((controller) => { void controller.pause(); });
       setItems((current) => current.map((item) => item.status === "uploading" || item.status === "reconnecting" ? { ...item, status: "paused", speed: 0 } : item));
     };
-    const on = () => { setOnline(true); setMessage("Connection restored. Resume queued files when ready."); };
+    const on = () => { setOnline(true); setMessage("Connection restored. Resume uploads when ready."); };
     window.addEventListener("offline", off);
     window.addEventListener("online", on);
     return () => {
@@ -285,44 +286,42 @@ export function UploadWorkspace({ username, storageUrl, storageBucket }: { usern
 
   return <div className="workspace">
     <header className="page-header">
-      <div><CustodyStrip route="UPLOAD">INTAKE:{username.toUpperCase()} ▦ CHUNKS:RESUMABLE ▦ PATHS:PRESERVED</CustodyStrip><span className="eyebrow">CLIENT TRANSFER / {username.toUpperCase()}</span><h1>Secure asset upload</h1><p>Files go directly to mmoptibuilds storage. Folder structure stays intact.</p></div>
-      <Status tone={online ? "green" : "orange"}>{online ? "Connection ready" : "Offline"}</Status>
+      <div><h1>Upload files</h1><p>Choose files or a folder. Folder structure will be preserved.</p></div>
+      <Status tone={online ? "green" : "orange"}>{online ? "Connected" : "Offline"}</Status>
     </header>
     {complete ? <Completion total={total} count={items.length} confirmedAt={confirmedAt} onReset={() => { setItems([]); setBatchId(null); setComplete(false); setConfirmedAt(null); setMessage(""); }} /> : <>
       <section className="upload-grid" aria-labelledby="drop-title">
         <div className={`drop-zone ${dragging ? "dragging" : ""}`} role="region" aria-label="Drop files here" aria-describedby="drop-description" onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={async (event: DragEvent) => { event.preventDefault(); setDragging(false); try { add(await droppedFiles(event.dataTransfer)); } catch { setMessage("The dropped files could not be read. Select them from your device and retry."); } }}>
-          <div className="drop-visual" aria-hidden="true"><span>╳╳╳</span><b><Icon name="upload" size={30} /></b><span>▦▦▦</span></div>
-          <span className="eyebrow">ASSET INTAKE</span><h2 id="drop-title">Drop files or a complete folder.</h2><p id="drop-description">Photos, video, source files, archives, executables, and unknown formats are accepted as untrusted data.</p>
-          <div className="drop-actions"><RippleButton className="button-primary" type="button" onClick={() => fileInput.current?.click()}>Select files</RippleButton><RippleButton className="button-secondary" type="button" onClick={() => folderInput.current?.click()}>Select folder</RippleButton></div>
+          <div className="drop-visual" aria-hidden="true"><Upload size={28} strokeWidth={1.5} /></div>
+          <h2 id="drop-title">Add files or a folder</h2><p id="drop-description">Drag files here, or choose them from your device. You can pause, retry, and continue an interrupted upload.</p>
+          <div className="drop-actions"><button className="button button-primary" type="button" onClick={() => fileInput.current?.click()}><FilePlus2 size={16} aria-hidden="true" />Add files</button><button className="button button-secondary" type="button" onClick={() => folderInput.current?.click()}><FolderPlus size={16} aria-hidden="true" />Add folder</button></div>
           <input ref={fileInput} className="sr-only" aria-label="Choose files to upload" type="file" multiple onChange={choose} /><input ref={folderInput} className="sr-only" aria-label="Choose a folder to upload" type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} onChange={choose} />
-          <small>Folder selection depends on browser support. You can always select files.</small>
+          <small>Folder selection depends on browser support.</small>
         </div>
-        <aside className="transfer-side" aria-label="Transfer protocol"><span className="eyebrow">TRANSFER PROTOCOL</span><ol><li><i>01</i><span><b>Queue</b>Inspect paths before sending</span></li><li><i>02</i><span><b>Resumable transfer</b>Pause and reconnect safely</span></li><li><i>03</i><span><b>Private delivery</b>No public file links</span></li></ol></aside>
       </section>
       {items.length ? <section className="queue-panel material-surface" aria-labelledby="queue-title">
-        <div className="queue-head"><div><span className="eyebrow">UPLOAD QUEUE</span><h2 id="queue-title">{items.length} {items.length === 1 ? "file" : "files"} · {formatBytes(total)}</h2></div><div className="queue-progress"><b>{percentage}%</b><span>{formatBytes(uploaded)} / {formatBytes(total)}</span></div></div>
-        <div className="progress-track" role="progressbar" aria-label="Overall upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={`${percentage}% uploaded`}><span style={{ width: `${percentage}%` }} /></div>
-        <div className="queue-controls"><p>{active ? `${formatBytes(speed)}/s · ${formatDuration((total - uploaded) / Math.max(speed, 1))} remaining` : "Review your queue, then start the secure transfer. Retry resumes the last confirmed chunk when available; otherwise only that file restarts."}</p><div>{active && canPause && <RippleButton className="button-secondary" type="button" onClick={pauseAll}><Icon name="pause" size={15} />Pause all</RippleButton>}<RippleButton className="button-primary" type="button" onClick={start} disabled={active || startingState || !online}>{active || startingState ? "Transferring…" : "Start transfer"}<Icon name="arrow-right" size={16} /></RippleButton></div></div>
+        <div className="queue-head"><div><h2 id="queue-title">Upload queue</h2><span>{items.length} {items.length === 1 ? "file" : "files"} · {formatBytes(total)}</span></div><div className="queue-progress"><b>{percentage}%</b><span>{formatBytes(uploaded)} / {formatBytes(total)}</span></div></div>
+        <div className="progress-track" role="progressbar" aria-label="Overall upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={`${percentage}% uploaded`}><span style={{ transform: `scaleX(${percentage / 100})` }} /></div>
+        <div className="queue-controls"><p>{active ? `${formatBytes(speed)}/s · ${formatDuration((total - uploaded) / Math.max(speed, 1))} remaining` : "Review the queue, then start upload. Retry continues from the last confirmed chunk when possible."}</p><div>{active && canPause && <button className="button button-secondary" type="button" onClick={pauseAll}><Pause size={15} aria-hidden="true" />Pause all</button>}<button className="button button-primary" type="button" onClick={start} disabled={active || startingState || !online}>{active || startingState ? "Uploading…" : "Start upload"}<Upload size={16} aria-hidden="true" /></button></div></div>
         {message && <p className="queue-message" role="status" aria-live="polite">{message}</p>}
         <div className="upload-list">{items.map((item) => <UploadRow key={item.id} item={item} onPause={() => pause(item.id)} onRetry={() => retry(item.id)} onRemove={() => remove(item.id)} canRemove={!batchId} />)}</div>
-      </section> : <EmptyState title="Your queue is clear." detail="Choose individual files, a folder, or drag them into the transfer area." />}
+      </section> : <EmptyState title="No files selected" detail="Add individual files, a folder, or drag them into the upload area." />}
     </>}
   </div>;
 }
 
 function UploadRow({ item, onPause, onRetry, onRemove, canRemove }: { item: UploadItem; onPause: () => void; onRetry: () => void; onRemove: () => void; canRemove: boolean }) {
-  const reduce = useReducedMotion();
   const percent = item.file.size ? Math.min(100, item.uploadedBytes / item.file.size * 100) : item.storageUploaded ? 100 : 0;
   const tone = item.status === "completed" ? "green" : item.status === "failed" ? "red" : item.status === "paused" ? "orange" : "blue";
-  return <motion.article className="upload-row" aria-label={`Upload ${item.relativePath}`} initial={reduce ? false : { opacity: 0, y: 8 }} animate={reduce ? undefined : { opacity: 1, y: 0 }} exit={reduce ? undefined : { opacity: 0, x: 20 }}>
-    <div className="file-icon" aria-hidden="true"><Icon name={item.relativePath.includes("/") ? "folder" : "file"} size={16} /></div>
-    <div className="file-info"><b title={item.relativePath}>{item.file.name}</b><span>{item.relativePath.replace(`/${item.file.name}`, "") || "Root"} · {formatBytes(item.file.size)}</span><div className="row-progress" role="progressbar" aria-label={`${item.file.name} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%` }} /></div>{item.error && <span className="row-error" role="alert">{item.error}</span>}</div>
-    <div className="file-stats"><Status tone={tone}>{item.status.replace("_", " ")}</Status><span>{Math.round(percent)}% · {item.speed ? `${formatBytes(item.speed)}/s` : formatBytes(item.uploadedBytes)}</span></div>
-    <div className="row-actions">{item.status === "uploading" && <button type="button" onClick={onPause}><Icon name="pause" size={14} /><span>Pause</span></button>}{["failed", "paused"].includes(item.status) && <button type="button" onClick={onRetry}><Icon name="play" size={14} /><span>Retry</span></button>}{canRemove && ["queued", "failed", "paused"].includes(item.status) && <button type="button" aria-label={`Remove ${item.file.name}`} title={`Remove ${item.file.name}`} onClick={onRemove}><Icon name="x" size={15} /><span className="sr-only">Remove</span></button>}</div>
-  </motion.article>;
+  return <article className="upload-row" aria-label={`Upload ${item.relativePath}`}>
+    <div className="file-icon" aria-hidden="true">{item.relativePath.includes("/") ? <Folder size={16} /> : <File size={16} />}</div>
+    <div className="file-info"><b title={item.relativePath}>{item.file.name}</b><span title={item.relativePath}>{item.relativePath.replace(`/${item.file.name}`, "") || "Root"} · {formatBytes(item.file.size)}</span><div className="row-progress" role="progressbar" aria-label={`${item.file.name} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ transform: `scaleX(${percent / 100})` }} /></div>{item.error && <span className="row-error" role="alert">{item.error}</span>}</div>
+    <div className="file-stats"><Status tone={tone}>{formatStatus(item.status)}</Status><span>{Math.round(percent)}% · {item.speed ? `${formatBytes(item.speed)}/s` : formatBytes(item.uploadedBytes)}</span></div>
+    <div className="row-actions">{item.status === "uploading" && <button type="button" onClick={onPause}><Pause size={14} aria-hidden="true" /><span>Pause</span></button>}{["failed", "paused"].includes(item.status) && <button type="button" onClick={onRetry}><Play size={14} aria-hidden="true" /><span>Retry</span></button>}{canRemove && ["queued", "failed", "paused"].includes(item.status) && <button type="button" aria-label={`Remove ${item.file.name}`} title={`Remove ${item.file.name}`} onClick={onRemove}><X size={15} aria-hidden="true" /><span className="sr-only">Remove</span></button>}</div>
+  </article>;
 }
 
 function Completion({ total, count, confirmedAt, onReset }: { total: number; count: number; confirmedAt: Date | null; onReset: () => void }) {
   const reduce = useReducedMotion();
-  return <motion.section className="completion material-glass" aria-labelledby="completion-title" initial={reduce ? false : { opacity: 0, scale: 0.96 }} animate={reduce ? undefined : { opacity: 1, scale: 1 }}><div className="complete-mark" aria-hidden="true"><Icon name="check" size={30} /></div><span className="eyebrow">TRANSFER COMPLETE</span><h2 id="completion-title">Files sent securely.</h2><p>mmoptibuilds has received your upload. You may close this page.</p><div className="complete-stats"><span><b>{count}</b>files</span><span><b>{formatBytes(total)}</b>delivered</span><span><b>{confirmedAt ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(confirmedAt) : "—"}</b>confirmed</span></div><RippleButton className="button-primary" type="button" onClick={onReset}>Upload more files<Icon name="arrow-right" size={16} /></RippleButton></motion.section>;
+  return <motion.section className="completion material-surface" aria-labelledby="completion-title" initial={reduce ? false : { opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.28, ease: [0.23, 1, 0.32, 1] }}><div className="complete-mark" aria-hidden="true"><Check size={26} strokeWidth={1.8} /></div><h2 id="completion-title">Upload complete</h2><p>mmoptibuilds received your files.</p><div className="complete-stats"><span><b>{count}</b>files</span><span><b>{formatBytes(total)}</b>total size</span><span><b>{confirmedAt ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(confirmedAt) : "—"}</b>completed</span></div><button className="button button-primary" type="button" onClick={onReset}>Upload more files<Upload size={16} aria-hidden="true" /></button></motion.section>;
 }
